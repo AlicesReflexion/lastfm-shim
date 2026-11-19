@@ -1,0 +1,48 @@
+# lfmshim example configuration. Copy to config.toml (git-ignored) and run:
+#   python -m lfmshim --config config.toml serve
+# Every key can also be set as LFMSHIM_<SECTION>_<KEY>, e.g. LFMSHIM_SERVER_PORT=9549.
+
+# data_dir = "C:/Users/me/AppData/Local/lfmshim"   # default: %LOCALAPPDATA%/lfmshim or ~/.local/share/lfmshim
+log_level = "INFO"
+
+[server]
+host = "127.0.0.1"          # loopback only unless allow_remote = true
+port = 9549
+# public_url = "http://localhost:9549"   # used for the /api/auth/ page; derived from host/port/tls when unset
+# tls_cert = "certs/ws.pem"              # PEM certificate chain (enables HTTPS)
+# tls_key = "certs/ws-key.pem"
+# allowed_hosts = ["ws.audioscrobbler.com"]  # extra Host header values to accept
+allow_remote = false
+
+[api]
+# api_keys = ["your-client-api-key"]     # empty = accept any api_key
+# Known client secrets let the shim verify api_sig:
+# clients = { "your-client-api-key" = "its-shared-secret" }
+signature_policy = "verify-known"        # verify-known | strict | off
+accept_unknown_sessions = false          # adopt real Last.fm session keys (single-user installs only)
+# default_user = "me"
+# auto_authorize_user = "me"             # approve auth tokens without the browser page
+json_collapse_single = false
+scrobble_max_age = 1209600               # 14 days; 0 disables
+require_post_for_writes = true
+# allowed_origins = ["https://player.example"]   # browser apps allowed to call write methods
+
+[upstream]
+contact = ""                             # REQUIRED etiquette: email/URL sent in the User-Agent to MusicBrainz & co.
+offline = false                          # serve only cached data
+musicbrainz_rate = 0.9                   # requests/second (MusicBrainz policy: 1/s average; margin kept)
+wikipedia_lang = "en"
+theaudiodb_enabled = true
+theaudiodb_key = "123"                   # TheAudioDB public test key
+cache_ttl = 604800
+negative_cache_ttl = 86400
+popularity_cache_ttl = 86400
+enrich_scrobbles = true
+chart_range = "week"
+
+[listenbrainz]
+# Opt-in writes. Prefer token_file or LFMSHIM_LISTENBRAINZ_TOKEN over putting the token here.
+scrobble = false
+feedback = false
+# token_file = "C:/Users/me/.config/lfmshim/listenbrainz-token"
+# local_user = "me"                      # only forward this local user's activity

@@ -231,7 +231,8 @@ def artist_get_top_tags(req: Request):
     return {"toptags": {"tag": toptags(merged_tags(a), 100, with_count=True), "@attr": {"artist": a["name"]}}}
 
 
-@method("artist.search", notes="MusicBrainz artist search; listeners from ListenBrainz")
+@method("artist.search", support="approximate",
+        notes="MusicBrainz relevance ranking (not popularity); listeners from ListenBrainz")
 def artist_search(req: Request):
     q = req.require("artist")
     page, limit = req.paging(30, 100)
@@ -298,7 +299,7 @@ def album_get_top_tags(req: Request):
     return {"toptags": {"tag": toptags(tags, 100, with_count=True), "@attr": {"artist": artist, "album": title}}}
 
 
-@method("album.search", notes="MusicBrainz release-group search")
+@method("album.search", support="approximate", notes="MusicBrainz release-group relevance ranking")
 def album_search(req: Request):
     q = req.require("album")
     page, limit = req.paging(30, 100)
@@ -402,7 +403,8 @@ def track_get_top_tags(req: Request):
                         "@attr": {"artist": artist["name"], "track": name}}}
 
 
-@method("track.search", notes="MusicBrainz recording search; listeners from ListenBrainz")
+@method("track.search", support="approximate",
+        notes="MusicBrainz relevance ranking (not popularity); listeners from ListenBrainz")
 def track_search(req: Request):
     q = req.require("track")
     artist = req.get("artist")
