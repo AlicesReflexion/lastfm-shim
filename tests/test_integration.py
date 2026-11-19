@@ -213,6 +213,22 @@ class CliTests(unittest.TestCase):
         self.assertIn("carol (password set)", out.stdout)
         shutil.rmtree(d, ignore_errors=True)
 
+    def test_outbox_command_shows_and_drops_held_items(self):
+        from lfmshim.store import Store
+        d = tempfile.mkdtemp()
+        try:
+            store = Store(os.path.join(d, "lfmshim.sqlite3"))
+            store.enqueue("listens", {"user": "alice", "listens": [{"listened_at": 1}]})
+            store.close()
+            out = self.run_cli("outbox", data_dir=d)  # forwarding is off by default: held
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertRegex(out.stdout, r"listens\s+alice\s+held\s+1")
+            out = self.run_cli("outbox", "--drop-held", data_dir=d)
+            self.assertIn("dropped 1 held item(s)", out.stdout)
+            self.assertIn("outbox is empty", self.run_cli("outbox", data_dir=d).stdout)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
     def test_bad_config_exit_code(self):
         env_bad = self.run_cli("--config", "does-not-exist.toml", "users")
         self.assertEqual(env_bad.returncode, 2)

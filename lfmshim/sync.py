@@ -1,8 +1,16 @@
 """Background delivery of opt-in ListenBrainz writes and cache warm-up.
 
-Everything a client submits is first committed locally, then queued in the
-SQLite outbox. The worker delivers queued items with retry/backoff, so client
-responses never wait on (or fail because of) ListenBrainz.
+Everything a client submits is committed locally together with its outbox
+items, in one SQLite transaction: a crash or restart can never keep a scrobble
+while losing its forwarding (and a client retry of a rolled-back call stores
+and queues everything). The worker delivers queued items with retry/backoff,
+so client responses never wait on (or fail because of) ListenBrainz.
+
+The worker applies the *current* configuration to every queued item. Items
+whose forwarding has since been disabled, or that belong to a local user other
+than ``listenbrainz.local_user``, are held: never sent, never retried, kept in
+the outbox so re-enabling forwarding delivers them. Enrichment items are
+selected separately, so held or failing ListenBrainz items cannot starve them.
 
 Semantics:
 * a track.scrobble call with one accepted, new scrobble -> listen_type "single";
@@ -28,6 +36,7 @@ from .upstream.listenbrainz import LISTEN_MINIMUM_TS, listen_payload
 
 log = logging.getLogger("lfmshim.sync")
 
+FORWARD_KINDS = ("listens", "playing_now", "feedback")
 PERMANENT_STATUSES = {400, 413, 422}
 AUTH_STATUSES = {401, 403}
 MAX_BACKOFF = 6 * 3600
@@ -52,6 +61,21 @@ class Sync:
     def _token(self) -> str:
         return self.cfg.resolved_token()
 
+    def forward_kinds(self) -> list[str]:
+        """Outbox kinds the current configuration allows sending."""
+        kinds = []
+        if self.cfg.scrobble:
+            kinds += ["listens", "playing_now"]
+        if self.cfg.feedback:
+            kinds.append("feedback")
+        return kinds
+
+    def deliverable(self, kind: str, user: str | None) -> bool:
+        if kind == "enrich":
+            return True
+        flag = self.cfg.feedback if kind == "feedback" else self.cfg.scrobble
+        return kind in FORWARD_KINDS and bool(user) and self._forwards(user, flag)
+
     # ---- producers -----------------------------------------------------------
     def scrobbled(self, user: str, records: list[dict[str, Any]]) -> None:
         if self._forwards(user, self.cfg.scrobble):
@@ -70,7 +94,7 @@ class Sync:
             return
         listen = listen_payload(record, include_ts=False, client="lfmshim", client_version=__version__)
         expires = self.app.now() + (record.get("duration") or 600)
-        self.app.store.enqueue("playing_now", {"user": user, "listen": listen, "expires": expires})
+        self.app.store.enqueue("playing_now", {"user": user, "listen": listen, "expires": expires}, expires=expires)
         self._wake.set()
 
     def feedback(self, user: str, artist: str, track: str, mbid: str, score: int) -> None:
@@ -81,13 +105,22 @@ class Sync:
         self._wake.set()
 
     # ---- delivery ------------------------------------------------------------
+    def _due(self, limit: int) -> list[Any]:
+        store = self.app.store
+        store.purge_expired_outbox()
+        rows = list(store.due_outbox(self.forward_kinds(), limit, self.cfg.local_user))
+        rows += store.due_outbox(["enrich"], limit)
+        return rows
+
     def flush(self, limit: int = 50) -> int:
         """Deliver due outbox items; returns how many were completed."""
         done = 0
         with self._flush_lock:
-            for row in self.app.store.due_outbox(limit):
-                payload = json.loads(row["payload"])
+            for row in self._due(limit):
+                if not self.deliverable(row["kind"], row["user"]):
+                    continue  # held under the current configuration; keep it queued
                 try:
+                    payload = json.loads(row["payload"])
                     self._deliver(row["kind"], payload)
                 except UpstreamError as exc:
                     if exc.status in PERMANENT_STATUSES:

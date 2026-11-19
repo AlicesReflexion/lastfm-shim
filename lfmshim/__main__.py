@@ -69,6 +69,26 @@ def cmd_users(args) -> int:
     return 0
 
 
+def cmd_outbox(args) -> int:
+    """Show queued background work; held items are kept but not sent."""
+    app = _app(args)
+    held = []
+    counts: dict[tuple[str, str, str], int] = {}
+    for row in app.store.outbox_items():
+        state = "deliverable" if app.sync.deliverable(row["kind"], row["user"]) else "held"
+        if state == "held":
+            held.append(row["id"])
+        key = (row["kind"], row["user"] or "", state)
+        counts[key] = counts.get(key, 0) + 1
+    for (kind, user, state), n in sorted(counts.items()):
+        print(f"{kind:12} {user or '-':16} {state:12} {n}")
+    if not counts:
+        print("outbox is empty")
+    if args.drop_held and held:
+        print(f"dropped {app.store.outbox_delete(held)} held item(s)")
+    return 0
+
+
 def cmd_methods(args) -> int:
     from .app import App  # noqa: F401  (registers methods)
     from . import api  # noqa: F401
@@ -94,6 +114,10 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("name")
     r.set_defaults(func=cmd_revoke)
     sub.add_parser("users", help="list local users").set_defaults(func=cmd_users)
+    o = sub.add_parser("outbox", help="show queued ListenBrainz/enrichment work")
+    o.add_argument("--drop-held", action="store_true",
+                   help="delete items the current config will not send (forwarding off or another local_user)")
+    o.set_defaults(func=cmd_outbox)
     sub.add_parser("methods", help="list implemented API methods").set_defaults(func=cmd_methods)
     args = p.parse_args(argv)
     try:

@@ -15,10 +15,11 @@ import secrets
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -90,7 +91,9 @@ CREATE TABLE IF NOT EXISTS outbox (
     created INTEGER NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
     next_attempt INTEGER NOT NULL DEFAULT 0,
-    last_error TEXT NOT NULL DEFAULT ''
+    last_error TEXT NOT NULL DEFAULT '',
+    user TEXT COLLATE NOCASE,
+    expires INTEGER
 );
 CREATE TABLE IF NOT EXISTS http_cache (
     key TEXT PRIMARY KEY,
@@ -142,15 +145,61 @@ class Store:
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self.clock = clock
         self._lock = threading.RLock()
+        self._tx_depth = 0
         self._db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         self._db.row_factory = sqlite3.Row
         with self._lock:
             if self.path != ":memory:":
                 self._db.execute("PRAGMA journal_mode=WAL")
             self._db.executescript(_SCHEMA)
+            self._migrate()
             self._db.execute(
-                "INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', ?)", (str(SCHEMA_VERSION),)
+                "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)", (str(SCHEMA_VERSION),)
             )
+
+    def _migrate(self) -> None:
+        """Bring databases created by older versions up to the current schema."""
+        cols = {r["name"] for r in self._db.execute("PRAGMA table_info(outbox)")}
+        with self.transaction():
+            if "user" not in cols:
+                self._db.execute("ALTER TABLE outbox ADD COLUMN user TEXT COLLATE NOCASE")
+            if "expires" not in cols:
+                self._db.execute("ALTER TABLE outbox ADD COLUMN expires INTEGER")
+            # v1 kept the user and expiry only inside the JSON payload.
+            for row in self._db.execute("SELECT id, payload FROM outbox WHERE user IS NULL").fetchall():
+                try:
+                    p = json.loads(row["payload"])
+                except ValueError:
+                    continue
+                self._db.execute("UPDATE outbox SET user=?, expires=? WHERE id=?",
+                                 (p.get("user"), p.get("expires"), row["id"]))
+            self._db.execute("CREATE INDEX IF NOT EXISTS outbox_due ON outbox(kind, next_attempt)")
+
+    @contextmanager
+    def transaction(self):
+        """Run the enclosed writes atomically (nested calls join the outer one).
+
+        The store lock is held throughout, so other threads cannot interleave
+        statements or observe a half-written state.
+        """
+        with self._lock:
+            if self._tx_depth:
+                self._tx_depth += 1
+                try:
+                    yield
+                finally:
+                    self._tx_depth -= 1
+                return
+            self._db.execute("BEGIN IMMEDIATE")
+            self._tx_depth = 1
+            try:
+                yield
+            except BaseException:
+                self._tx_depth = 0
+                self._db.execute("ROLLBACK")
+                raise
+            self._tx_depth = 0
+            self._db.execute("COMMIT")
 
     def now(self) -> int:
         return int(self.clock())
@@ -418,13 +467,35 @@ class Store:
                          "GROUP BY tag COLLATE NOCASE ORDER BY n DESC, tag LIMIT ? OFFSET ?", (limit, offset))
 
     # ---- outbox ----------------------------------------------------------
-    def enqueue(self, kind: str, payload: dict[str, Any]) -> int:
-        cur = self._exec("INSERT INTO outbox(kind, payload, created) VALUES(?,?,?)",
-                         (kind, json.dumps(payload), self.now()))
+    def enqueue(self, kind: str, payload: dict[str, Any], expires: int | None = None) -> int:
+        cur = self._exec("INSERT INTO outbox(kind, payload, created, user, expires) VALUES(?,?,?,?,?)",
+                         (kind, json.dumps(payload), self.now(), payload.get("user"), expires))
         return int(cur.lastrowid)
 
-    def due_outbox(self, limit: int = 50) -> list[sqlite3.Row]:
-        return self._all("SELECT * FROM outbox WHERE next_attempt <= ? ORDER BY id LIMIT ?", (self.now(), limit))
+    def due_outbox(self, kinds: Iterable[str], limit: int = 50, user: str = "") -> list[sqlite3.Row]:
+        """Due items of the given kinds, oldest first; ``user`` restricts them to
+        one local user. Items of other kinds or users are left untouched."""
+        kinds = list(kinds)
+        if not kinds:
+            return []
+        sql = (f"SELECT * FROM outbox WHERE kind IN ({','.join('?' * len(kinds))}) AND next_attempt <= ?"
+               + (" AND user = ? COLLATE NOCASE" if user else "") + " ORDER BY id LIMIT ?")
+        args: list[Any] = [*kinds, self.now()] + ([user] if user else []) + [limit]
+        return self._all(sql, args)
+
+    def purge_expired_outbox(self) -> int:
+        """Drop items past their expiry (stale now-playing), delivered or not."""
+        return self._exec("DELETE FROM outbox WHERE expires IS NOT NULL AND expires < ?", (self.now(),)).rowcount
+
+    def outbox_delete(self, ids: Iterable[int]) -> int:
+        n = 0
+        with self.transaction():
+            for i in ids:
+                n += self._exec("DELETE FROM outbox WHERE id=?", (i,)).rowcount
+        return n
+
+    def outbox_items(self) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM outbox ORDER BY id")
 
     def outbox_done(self, item_id: int) -> None:
         self._exec("DELETE FROM outbox WHERE id=?", (item_id,))

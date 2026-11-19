@@ -67,30 +67,35 @@ def track_scrobble(req: Request):
             raise LastFmError(INVALID_PARAMS, "Invalid parameters - timestamp is required and must be an integer")
     results, fresh = [], []
     accepted = ignored = 0
-    for it in items:
-        code = _ignore_code(app, it)
-        record = {
-            "artist": it["artist"], "track": it["track"], "timestamp": int(it["timestamp"]), "album": it["album"],
-            "albumArtist": it["albumArtist"], "trackNumber": it["trackNumber"], "mbid": it["mbid"],
-            "duration": _duration(it["duration"]),
-        }
-        if code == 0:
-            accepted += 1
-            # Duplicate submissions (client retries) are accepted but stored and
-            # forwarded once.
-            if app.store.add_scrobble(req.user, record):
-                fresh.append(record)
-            app.store.clear_now_playing(req.user, record["artist"], record["track"])
-        else:
-            ignored += 1
-        results.append({
-            "track": _corrected(it["track"]), "artist": _corrected(it["artist"]),
-            "album": _corrected(it["album"]), "albumArtist": _corrected(it["albumArtist"]),
-            "timestamp": it["timestamp"],
-            "ignoredMessage": {"#text": IGNORED.get(code, ""), "code": str(code)},
-        })
-    if fresh:
-        app.scrobbled(req.user, fresh)
+    # One transaction for the whole batch: the scrobbles and their outbox items
+    # (forwarding, enrichment) are committed together or not at all, so a
+    # failure can never leave a stored scrobble that will not be forwarded,
+    # and the client's retry of a failed call stores and queues everything.
+    with app.store.transaction():
+        for it in items:
+            code = _ignore_code(app, it)
+            record = {
+                "artist": it["artist"], "track": it["track"], "timestamp": int(it["timestamp"]),
+                "album": it["album"], "albumArtist": it["albumArtist"], "trackNumber": it["trackNumber"],
+                "mbid": it["mbid"], "duration": _duration(it["duration"]),
+            }
+            if code == 0:
+                accepted += 1
+                # Duplicate submissions (client retries) are accepted but stored
+                # and forwarded once.
+                if app.store.add_scrobble(req.user, record):
+                    fresh.append(record)
+                app.store.clear_now_playing(req.user, record["artist"], record["track"])
+            else:
+                ignored += 1
+            results.append({
+                "track": _corrected(it["track"]), "artist": _corrected(it["artist"]),
+                "album": _corrected(it["album"]), "albumArtist": _corrected(it["albumArtist"]),
+                "timestamp": it["timestamp"],
+                "ignoredMessage": {"#text": IGNORED.get(code, ""), "code": str(code)},
+            })
+        if fresh:
+            app.scrobbled(req.user, fresh)
     return {"scrobbles": {"scrobble": results, "@attr": {"accepted": accepted, "ignored": ignored}}}
 
 
@@ -106,8 +111,9 @@ def track_update_now_playing(req: Request):
     record = {"artist": item["artist"], "track": item["track"], "album": item["album"],
               "albumArtist": item["albumArtist"], "trackNumber": item["trackNumber"], "mbid": item["mbid"],
               "duration": _duration(item["duration"])}
-    app.store.set_now_playing(req.user, record, record["duration"])
-    app.now_playing(req.user, record)
+    with app.store.transaction():
+        app.store.set_now_playing(req.user, record, record["duration"])
+        app.now_playing(req.user, record)
     return {"nowplaying": {
         "track": _corrected(item["track"]), "artist": _corrected(item["artist"]),
         "album": _corrected(item["album"]), "albumArtist": _corrected(item["albumArtist"]),
@@ -118,14 +124,16 @@ def track_update_now_playing(req: Request):
 @method("track.love", auth="session", write=True, notes="stored locally; optional ListenBrainz feedback")
 def track_love(req: Request):
     artist, track = req.require("artist"), req.require("track")
-    req.app.store.love(req.user, artist, track, req.get("mbid") or "")
-    req.app.feedback(req.user, artist, track, req.get("mbid") or "", 1)
+    with req.app.store.transaction():
+        req.app.store.love(req.user, artist, track, req.get("mbid") or "")
+        req.app.feedback(req.user, artist, track, req.get("mbid") or "", 1)
     return {}
 
 
 @method("track.unlove", auth="session", write=True, notes="stored locally; optional ListenBrainz feedback")
 def track_unlove(req: Request):
     artist, track = req.require("artist"), req.require("track")
-    req.app.store.unlove(req.user, artist, track)
-    req.app.feedback(req.user, artist, track, req.get("mbid") or "", 0)
+    with req.app.store.transaction():
+        req.app.store.unlove(req.user, artist, track)
+        req.app.feedback(req.user, artist, track, req.get("mbid") or "", 0)
     return {}

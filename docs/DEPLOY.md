@@ -37,9 +37,23 @@ be checked. Sessions are what really authorise writes.
    `listenbrainz.token_file = "…"` or the environment variable `LFMSHIM_LISTENBRAINZ_TOKEN`.
 3. If several local users share the install, set `listenbrainz.local_user`.
 
-Scrobbles are always committed locally first. Delivery happens in the background, with
-retries recorded in the `outbox` table. ListenBrainz downtime never fails a client's
-scrobble.
+Each scrobble call (a whole batch included) is committed in one SQLite transaction together
+with its `outbox` items. A crash can never leave a stored scrobble that is not queued for
+forwarding; a call that fails is rolled back completely, and the client's retry stores and
+queues everything. Delivery happens in the background, with retries. ListenBrainz downtime
+never fails a client's scrobble.
+
+The worker applies the configuration that is current when it delivers. If you turn
+`scrobble` or `feedback` off, or point `local_user` at someone else, matching queued items are
+**held**: never sent and never retried, but kept, so turning forwarding back on delivers them.
+`python -m lfmshim outbox` lists queued work as deliverable or held, and
+`python -m lfmshim outbox --drop-held` deletes the held items. Stale now-playing updates are
+dropped automatically. Scrobble enrichment (MBIDs and covers) is queued separately, so held or
+failing ListenBrainz items never delay it.
+
+Databases written by earlier versions may contain scrobbles stored before this guarantee
+existed whose forwarding was never queued. The shim cannot detect these; resubmit them from
+the client or import them into ListenBrainz if needed.
 
 ## 2. HTTPS on a fixed host name
 
@@ -81,6 +95,7 @@ certificate that only the test trusts.
 | Set a password | `python -m lfmshim adduser me` (existing users keep their data) |
 | Revoke all sessions | `python -m lfmshim revoke me` |
 | List methods | `python -m lfmshim methods` |
+| Inspect queued forwarding | `python -m lfmshim outbox` (`--drop-held` deletes held items) |
 | Back up | Copy `lfmshim.sqlite3` while the server is stopped, or use `sqlite3 .backup`. |
 
 What lfmshim logs: registered method names, error codes, and upstream failures. When a method
