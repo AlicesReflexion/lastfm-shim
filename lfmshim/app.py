@@ -20,7 +20,6 @@ class App:
             store = Store(data / "lfmshim.sqlite3", clock=clock)
         self.store = store
         self.transport = transport
-        self.web_auth = None
         self._init_services()
 
     def _init_services(self) -> None:
@@ -39,9 +38,31 @@ class App:
         self.tadb = TheAudioDB(self.http, up.theaudiodb_url, up.theaudiodb_key, up.theaudiodb_enabled)
         self.caa = CoverArtArchive(self.http, up.coverart_url)
         self.resolver = Resolver(self)
+        from .sync import Sync
+        from .webauth import WebAuth
+
+        from .api.auth import LoginThrottle
+
+        self.login_throttle = LoginThrottle()
+        self.sync = Sync(self)
+        self.web_auth = WebAuth(self)
+
+    # Hooks used by the scrobble methods.
+    def scrobbled(self, user: str, records: list) -> None:
+        self.sync.scrobbled(user, records)
+
+    def now_playing(self, user: str, record: dict) -> None:
+        self.sync.now_playing(user, record)
+
+    def feedback(self, user: str, artist: str, track: str, mbid: str, score: int) -> None:
+        self.sync.feedback(user, artist, track, mbid, score)
+
+    def start_background(self) -> None:
+        self.sync.start()
 
     def now(self) -> int:
         return int(self.clock())
 
     def close(self) -> None:
+        self.sync.stop()
         self.store.close()

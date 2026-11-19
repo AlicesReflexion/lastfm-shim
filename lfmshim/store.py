@@ -106,10 +106,20 @@ def digest(secret: str) -> str:
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()
 
 
-def hash_password(password: str, *, iterations: int = PBKDF2_ITERATIONS) -> str:
+def hash_password(password: str, *, iterations: int | None = None) -> str:
+    iterations = iterations or PBKDF2_ITERATIONS
     salt = os.urandom(16)
     dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
     return f"pbkdf2_sha256${iterations}${salt.hex()}${dk.hex()}"
+
+
+_DUMMY: dict[int, str] = {}
+
+
+def _dummy_hash() -> str:
+    if PBKDF2_ITERATIONS not in _DUMMY:
+        _DUMMY[PBKDF2_ITERATIONS] = hash_password(secrets.token_hex(8))
+    return _DUMMY[PBKDF2_ITERATIONS]
 
 
 def verify_password(password: str, stored: str | None) -> bool:
@@ -149,6 +159,12 @@ class Store:
         with self._lock:
             self._db.close()
 
+    def __del__(self) -> None:
+        try:
+            self._db.close()
+        except Exception:
+            pass
+
     def _exec(self, sql: str, args: Iterable[Any] = ()) -> sqlite3.Cursor:
         with self._lock:
             return self._db.execute(sql, tuple(args))
@@ -182,9 +198,10 @@ class Store:
     def check_password(self, name: str, password: str) -> str | None:
         """Return the canonical username if the password matches."""
         row = self.get_user(name)
-        if row is None:
-            # Burn comparable time so user enumeration via timing is harder.
-            verify_password(password, hash_password("x", iterations=1_000))
+        if row is None or not row["password_hash"]:
+            # Spend the same PBKDF2 work as a real check so response timing
+            # does not reveal which usernames exist.
+            verify_password(password, _dummy_hash())
             return None
         return row["name"] if verify_password(password, row["password_hash"]) else None
 
@@ -246,6 +263,17 @@ class Store:
             ),
         )
         return cur.rowcount > 0
+
+    def fill_scrobble_mbids(self, user: str, artist: str, track: str, album: str, track_mbid: str,
+                            artist_mbid: str, album_mbid: str) -> None:
+        """Fill MBIDs the client did not send; never overwrite client values."""
+        self._exec(
+            "UPDATE scrobbles SET track_mbid=CASE WHEN track_mbid='' THEN ? ELSE track_mbid END, "
+            "artist_mbid=CASE WHEN artist_mbid='' THEN ? ELSE artist_mbid END, "
+            "album_mbid=CASE WHEN album_mbid='' AND album=? COLLATE NOCASE THEN ? ELSE album_mbid END "
+            "WHERE user=? AND artist=? COLLATE NOCASE AND track=? COLLATE NOCASE",
+            (track_mbid, artist_mbid, album, album_mbid, user, artist, track),
+        )
 
     def recent_scrobbles(self, user: str, limit: int, offset: int = 0, since: int | None = None,
                          until: int | None = None) -> tuple[list[sqlite3.Row], int]:
@@ -370,7 +398,7 @@ class Store:
                    (user, kind, artist, name, tag))
 
     def get_tags(self, user: str, kind: str, artist: str, name: str) -> list[str]:
-        rows = self._all("SELECT tag FROM user_tags WHERE user=? AND kind=? AND artist=? AND name=? ORDER BY ts",
+        rows = self._all("SELECT tag FROM user_tags WHERE user=? AND kind=? AND artist=? AND name=? ORDER BY ts, rowid",
                          (user, kind, artist, name))
         return [r["tag"] for r in rows]
 
@@ -384,6 +412,10 @@ class Store:
         rows = self._all("SELECT * FROM user_tags WHERE user=? AND tag=? AND kind=? ORDER BY ts DESC LIMIT ? OFFSET ?",
                          (user, tag, kind, limit, offset))
         return rows, total
+
+    def global_tags(self, limit: int, offset: int) -> list[sqlite3.Row]:
+        return self._all("SELECT tag, COUNT(*) AS n, COUNT(DISTINCT user) AS reach FROM user_tags "
+                         "GROUP BY tag COLLATE NOCASE ORDER BY n DESC, tag LIMIT ? OFFSET ?", (limit, offset))
 
     # ---- outbox ----------------------------------------------------------
     def enqueue(self, kind: str, payload: dict[str, Any]) -> int:

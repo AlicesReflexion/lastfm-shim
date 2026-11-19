@@ -69,6 +69,9 @@ class ApiConfig:
     # Reject scrobbles older than this many seconds (Last.fm: 14 days). 0 = off.
     scrobble_max_age: int = 14 * 24 * 3600
     scrobble_max_future: int = 10 * 60
+    # Let auth.getSession approve pending tokens for this local user without the
+    # browser step (for clients that hardcode the www.last.fm auth page).
+    auto_authorize_user: str = ""
     # Write methods must be POSTed (Last.fm requirement; also CSRF protection).
     require_post_for_writes: bool = True
     # Cross-site Origin values allowed to call write methods (normally none).
@@ -100,6 +103,10 @@ class UpstreamConfig:
     cache_ttl: int = 7 * 24 * 3600
     negative_cache_ttl: int = 24 * 3600
     popularity_cache_ttl: int = 24 * 3600
+    # Resolve MBIDs/cover art for new scrobbles in the background (reads only).
+    enrich_scrobbles: bool = True
+    # ListenBrainz sitewide stats range used for chart.* and geo.*.
+    chart_range: str = "week"
 
 
 @dataclass
@@ -119,6 +126,8 @@ class ListenBrainzConfig:
         "session_based_days_9000_session_300_contribution_5_threshold_15_limit_50_skip_30"
     )
     retry_interval: int = 60
+    # Only forward this local user's activity (empty = every local user).
+    local_user: str = ""
 
     def resolved_token(self) -> str:
         if self.token:
