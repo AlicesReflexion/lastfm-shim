@@ -83,8 +83,10 @@ certificate that only the test trusts.
 | List methods | `python -m lfmshim methods` |
 | Back up | Copy `lfmshim.sqlite3` while the server is stopped, or use `sqlite3 .backup`. |
 
-What lfmshim logs: method names, error codes, and upstream failures. It never logs
-passwords, session keys, tokens, `api_sig` values or the ListenBrainz token. Session keys and
+What lfmshim logs: registered method names, error codes, and upstream failures. When a method
+crashes, it also logs an allowlist of metadata parameters (such as `artist`, `track`, `limit`,
+`page`) and only counts the rest. It never logs `api_key`, passwords, session keys, tokens,
+`api_sig` values, unrecognised parameters or the ListenBrainz token. Session keys and
 tokens are stored as SHA-256 digests; passwords as salted PBKDF2.
 
 ### Upstream etiquette

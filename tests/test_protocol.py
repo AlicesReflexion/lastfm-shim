@@ -15,6 +15,9 @@ from lfmshim.server import serve_in_thread
 from .helpers import API_KEY, SECRET, call, make_app
 
 
+TEST_METHODS = ("test.echo", "test.write", "test.signed", "test.crash")
+
+
 def _register_test_methods():
     @registry.method("test.echo")
     def echo(req):
@@ -29,6 +32,10 @@ def _register_test_methods():
     @registry.method("test.signed", auth="signed")
     def signed(req):
         return {}
+
+    @registry.method("test.crash")
+    def crash(req):
+        raise RuntimeError("boom")
 
 
 class RenderTests(unittest.TestCase):
@@ -66,7 +73,7 @@ class DispatchTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        for n in ("test.echo", "test.write", "test.signed"):
+        for n in TEST_METHODS:
             registry.REGISTRY.pop(n, None)
 
     def setUp(self):
@@ -113,6 +120,26 @@ class DispatchTests(unittest.TestCase):
                 "message": "Invalid parameters - Your request is missing a required parameter", "error": 6})
         resp = handle(self.app, "GET", {"method": "test.echo", "value": "x"})
         self.assertEqual((resp.status, ET.fromstring(resp.body).find("error").get("code")), (400, "6"))
+
+    def test_crash_log_contains_only_allowlisted_params(self):
+        secrets_ = {"api_key": "KEY-0123456789abcdef", "sk": "SK-0123456789abcdef", "api_sig": "SIG-01234567",
+                    "password": "PW-hunter22", "token": "TOK-012345", "listenbrainz_token": "LB-012345",
+                    "X-Secret": "XS-012345", "artist[0]password": "AP-012345"}
+        params = {"method": "test.crash", "format": "json", "artist": "Cher", "limit": "5", **secrets_}
+        with self.assertLogs("lfmshim.api", "ERROR") as logs:
+            resp = handle(self.app, "GET", params)
+        self.assertEqual(json.loads(resp.body)["error"], 8)
+        text = " | ".join(logs.output)
+        for value in secrets_.values():
+            self.assertNotIn(value, text)
+        self.assertIn("'artist': 'Cher'", text)
+        self.assertIn("'limit': '5'", text)
+        self.assertIn("'<omitted>': '8'", text)
+
+    def test_unknown_method_name_not_logged(self):
+        with self.assertLogs("lfmshim.api", "INFO") as logs:
+            handle(self.app, "GET", {"method": "SECRET-abc123", "api_key": API_KEY})
+        self.assertNotIn("SECRET-abc123", " | ".join(logs.output))
 
     def test_api_key_allowlist(self):
         # Observed live for an invalid key: error 10, HTTP 403, no links.
@@ -227,7 +254,7 @@ class HttpServerTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.srv.shutdown()
         cls.srv.server_close()
-        for n in ("test.echo", "test.write", "test.signed"):
+        for n in TEST_METHODS:
             registry.REGISTRY.pop(n, None)
 
     def request(self, verb, path, body=None, headers=None):

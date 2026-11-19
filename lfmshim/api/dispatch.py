@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,8 +16,15 @@ from .registry import Request, lookup
 
 log = logging.getLogger("lfmshim.api")
 
-# Parameters never written to logs.
-SENSITIVE = {"password", "api_sig", "sk", "token", "authtoken", "authToken", "secret"}
+# The only request parameters ever written to logs. Everything else (api_key,
+# sk, api_sig, password, token, and any unknown or misspelt parameter that
+# might carry a secret) is left out; only a count of omitted parameters is kept.
+LOG_SAFE_PARAMS = frozenset({
+    "method", "format", "artist", "album", "track", "albumartist", "mbid", "limit", "page", "user",
+    "username", "period", "extended", "autocorrect", "lang", "country", "tag", "taggingtype", "from", "to",
+    "timestamp", "duration", "tracknumber", "chosenbyuser",
+})
+LOG_VALUE_MAX = 120
 
 
 @dataclass
@@ -36,8 +44,34 @@ def signature(params: dict[str, str], secret: str) -> str:
     return hashlib.md5(("".join(parts) + secret).encode("utf-8")).hexdigest()
 
 
+_INDEXED = re.compile(r"^([A-Za-z]+)(?:\[\d{1,3}\])?$")
+
+
+def _log_key(key: str) -> str:
+    """"artist" or "artist[3]" -> "artist"; anything else -> "" (never safe)."""
+    m = _INDEXED.match(key)
+    return m.group(1).lower() if m else ""
+
+
 def redact(params: dict[str, str]) -> dict[str, str]:
-    return {k: ("<redacted>" if k in SENSITIVE else v) for k, v in params.items()}
+    """Allowlisted, truncated parameters for logs. Never echoes other values."""
+    out: dict[str, str] = {}
+    omitted = 0
+    for k, v in params.items():
+        if _log_key(k) in LOG_SAFE_PARAMS:
+            v = str(v)
+            out[k] = v if len(v) <= LOG_VALUE_MAX else v[:LOG_VALUE_MAX] + "…"
+        else:
+            omitted += 1
+    if omitted:
+        out["<omitted>"] = str(omitted)
+    return out
+
+
+def _log_name(name: str) -> str:
+    """The canonical method name for logs; unregistered names are not echoed."""
+    spec = lookup(name) if name else None
+    return spec.name if spec else "<unknown method>"
 
 
 def _render(result: Any, fmt: str, callback: str | None, collapse: bool) -> Response:
@@ -66,19 +100,20 @@ def handle(app: Any, http_method: str, params: dict[str, str], headers: dict[str
         callback = None
     cfg = app.config.api
     name = params.get("method") or ""
+    safe_name = _log_name(name)
     try:
         result = _dispatch(app, http_method, params, headers, name)
-        log.info("%s %s ok", http_method, name)
+        log.info("%s %s ok", http_method, safe_name)
         return _render(result, fmt, callback, cfg.json_collapse_single)
     except LastFmError as err:
-        log.info("%s %s error %d", http_method, name, err.code)
+        log.info("%s %s error %d", http_method, safe_name, err.code)
         return _render_error(err, fmt, callback)
     except UpstreamError as err:
-        log.warning("%s %s upstream failure: %s", http_method, name, err)
+        log.warning("%s %s upstream failure: %s", http_method, safe_name, err)
         return _render_error(LastFmError(E.TEMPORARY_ERROR),
                              fmt, callback)
-    except Exception:  # pragma: no cover - defensive
-        log.exception("%s %s crashed (params=%r)", http_method, name, redact(params))
+    except Exception:
+        log.exception("%s %s crashed (params=%r)", http_method, safe_name, redact(params))
         return _render_error(LastFmError(E.OPERATION_FAILED), fmt, callback)
 
 
