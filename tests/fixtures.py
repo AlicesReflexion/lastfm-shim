@@ -68,7 +68,7 @@ def install_cher(t):
     t.add_json(f"{MB}/artist/{CHER}", cher_artist())
     t.add_json(f"{MB}/artist/{NIRVANA_US}", nirvana(NIRVANA_US, "90s US grunge band"))
     t.add_json(f"{MB}/artist/{NIRVANA_UK}", nirvana(NIRVANA_UK, "60s band from the UK"))
-    t.add_json("https://www.wikidata.org/wiki/Special:EntityData/Q12003.json",
+    t.add_json("https://www.wikidata.org/w/api.php?action=wbgetentities&ids=Q12003",
                {"entities": {"Q12003": {"sitelinks": {"enwiki": {"title": "Cher"}}}}})
     t.add_json("https://en.wikipedia.org/api/rest_v1/page/summary/Cher", {
         "type": "standard", "title": "Cher", "extract": "Cher is an American singer & actress.",

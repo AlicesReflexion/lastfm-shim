@@ -51,6 +51,13 @@ class MusicBrainz:
             q += f' AND (artist:"{lucene(artist)}" OR artistname:"{lucene(artist)}")'
         return self.search("recording", q, limit, offset, **kw)
 
+    def search_recordings_by_artist_id(self, track: str, arid: str, official_album: bool, limit: int = 50,
+                                       **kw) -> dict[str, Any]:
+        q = f'recording:"{lucene(track)}" AND arid:{arid}'
+        if official_album:
+            q += " AND status:official AND primarytype:album"
+        return self.search("recording", q, limit, 0, **kw)
+
     # ---- lookup ------------------------------------------------------------
     def artist(self, mbid: str, **kw) -> dict[str, Any] | None:
         return self._get(f"artist/{mbid}", {"inc": "url-rels+tags+genres+aliases"}, **kw)

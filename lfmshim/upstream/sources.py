@@ -40,7 +40,11 @@ class Wikipedia:
             qid = url.rstrip("/").rsplit("/", 1)[-1]
             if not qid.startswith("Q"):
                 continue
-            data = self.http.get_json("wikidata", f"{self.wd_base}/wiki/Special:EntityData/{qid}.json")
+            # wbgetentities with a sitelink filter is a few hundred bytes; the
+            # full Special:EntityData dump can be megabytes for famous artists.
+            data = self.http.get_json("wikidata", f"{self.wd_base}/w/api.php",
+                                      {"action": "wbgetentities", "ids": qid, "props": "sitelinks",
+                                       "sitefilter": f"{self.lang}wiki", "format": "json"}, optional=True)
             entity_data = ((data or {}).get("entities") or {})
             # Wikidata may redirect the QID; take whichever entity came back.
             for ent in entity_data.values():
@@ -56,7 +60,7 @@ class Wikipedia:
             if not title:
                 return None
             data = self.http.get_json("wikipedia", f"{self.wp_base}/api/rest_v1/page/summary/"
-                                      + quote(title.replace(" ", "_"), safe=""))
+                                      + quote(title.replace(" ", "_"), safe=""), optional=True)
         except UpstreamError as exc:
             log.info("wikipedia lookup failed: %s", exc)
             return None
@@ -79,7 +83,8 @@ class TheAudioDB:
         if not self.enabled or not mbid:
             return {}
         try:
-            data = self.http.get_json("theaudiodb", f"{self.base}/{self.key}/artist-mb.php", {"i": mbid}, **kw)
+            data = self.http.get_json("theaudiodb", f"{self.base}/{self.key}/artist-mb.php", {"i": mbid},
+                                      optional=True, **kw)
         except UpstreamError as exc:
             log.info("theaudiodb lookup failed: %s", exc)
             return {}
@@ -105,7 +110,7 @@ class CoverArtArchive:
         if not mbid:
             return {}
         try:
-            data = self.http.get_json("coverart", f"{self.base}/{kind}/{mbid}", **kw)
+            data = self.http.get_json("coverart", f"{self.base}/{kind}/{mbid}", optional=True, **kw)
         except UpstreamError as exc:
             log.info("cover art lookup failed: %s", exc)
             return {}

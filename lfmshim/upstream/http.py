@@ -17,8 +17,8 @@ from ..errors import UpstreamError
 
 log = logging.getLogger("lfmshim.upstream")
 
-_MISS = object()
 NOT_FOUND = {"__lfmshim_not_found__": True}
+FAILED = {"__lfmshim_failed__": True}
 
 
 class UrllibTransport:
@@ -89,8 +89,14 @@ class HttpClient:
 
     def get_json(self, service: str, url: str, params: dict[str, Any] | None = None, *, ttl: int | None = None,
                  method: str = "GET", json_body: Any = None, headers: dict[str, str] | None = None,
-                 cache: bool = True, cache_only: bool = False, retries: int = 2) -> Any | None:
-        """Fetch JSON. Returns None for 404/empty (negatively cached)."""
+                 cache: bool = True, cache_only: bool = False, retries: int = 2,
+                 optional: bool = False) -> Any | None:
+        """Fetch JSON. Returns None for 404/empty (negatively cached).
+
+        ``optional`` marks enrichment data (popularity, images, wikis): it uses
+        a short timeout, and a failure is cached briefly and reported as None so
+        one slow service cannot stall every request.
+        """
         if params:
             url = url + ("&" if "?" in url else "?") + urlencode({k: v for k, v in params.items() if v is not None})
         body = json.dumps(json_body, separators=(",", ":")).encode() if json_body is not None else None
@@ -100,7 +106,7 @@ class HttpClient:
         if cache:
             hit = store.cache_get(key)
             if hit is not None:
-                return None if hit == NOT_FOUND else hit
+                return None if hit in (NOT_FOUND, FAILED) else hit
         if cache_only:
             return None
         if self.cfg.offline:
@@ -109,8 +115,18 @@ class HttpClient:
             if cache:
                 hit = store.cache_get(key)
                 if hit is not None:
-                    return None if hit == NOT_FOUND else hit
-            value = self._fetch(service, method, url, body, headers or {}, retries)
+                    return None if hit in (NOT_FOUND, FAILED) else hit
+            timeout = min(self.cfg.timeout, self.cfg.optional_timeout) if optional else self.cfg.timeout
+            try:
+                value = self._fetch(service, method, url, body, headers or {}, 0 if optional else retries,
+                                    timeout)
+            except UpstreamError as exc:
+                if not optional:
+                    raise
+                log.info("optional %s data unavailable: %s", service, exc)
+                if cache:
+                    store.cache_put(key, FAILED, self.cfg.failure_cache_ttl)
+                return None
             if cache:
                 if value is None:
                     store.cache_put(key, NOT_FOUND, min(ttl, self.cfg.negative_cache_ttl))
@@ -119,7 +135,7 @@ class HttpClient:
             return value
 
     def _fetch(self, service: str, method: str, url: str, body: bytes | None, extra: dict[str, str],
-               retries: int) -> Any | None:
+               retries: int, timeout: float) -> Any | None:
         limiter = self.limiters.get(service)
         headers = {"User-Agent": self.user_agent, "Accept": "application/json"}
         if body is not None:
@@ -129,7 +145,7 @@ class HttpClient:
         while True:
             if limiter:
                 limiter.wait()
-            status, rheaders, data = self.transport.request(method, url, headers, body, self.cfg.timeout)
+            status, rheaders, data = self.transport.request(method, url, headers, body, timeout)
             if status in (429, 503) and attempt < retries:
                 attempt += 1
                 retry_after = _retry_after(rheaders, default=2.0 * attempt)

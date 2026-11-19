@@ -49,7 +49,7 @@ class ListenBrainz:
             chunk = mbids[i:i + 100]
             try:
                 data = self.http.get_json("listenbrainz", f"{self.api}/1/popularity/{entity}", method="POST",
-                                          json_body={f"{field}s": chunk}, ttl=ttl)
+                                          json_body={f"{field}s": chunk}, ttl=ttl, optional=True)
             except UpstreamError as exc:
                 log.info("listenbrainz popularity failed: %s", exc)
                 continue
@@ -69,14 +69,23 @@ class ListenBrainz:
     def release_group_popularity(self, mbids: list[str], ttl: int) -> dict[str, dict[str, int]]:
         return self._popularity("release-group", "release_group_mbid", mbids, ttl)
 
+    def _read_headers(self) -> dict[str, str]:
+        """Some read endpoints now require a token (HTTP 401 otherwise)."""
+        try:
+            token = self.cfg.resolved_token()
+        except Exception:
+            token = ""
+        return self._auth(token) if token else {}
+
     def top_recordings_for_artist(self, artist_mbid: str, ttl: int) -> list[dict[str, Any]]:
         data = self.http.get_json("listenbrainz", f"{self.api}/1/popularity/top-recordings-for-artist/{artist_mbid}",
-                                  ttl=ttl)
+                                  ttl=ttl, headers=self._read_headers(), optional=True)
         return _flatten(data)
 
     def top_release_groups_for_artist(self, artist_mbid: str, ttl: int) -> list[dict[str, Any]]:
         data = self.http.get_json(
-            "listenbrainz", f"{self.api}/1/popularity/top-release-groups-for-artist/{artist_mbid}", ttl=ttl)
+            "listenbrainz", f"{self.api}/1/popularity/top-release-groups-for-artist/{artist_mbid}", ttl=ttl,
+            headers=self._read_headers(), optional=True)
         return _flatten(data)
 
     # ---- stats -------------------------------------------------------------
@@ -89,7 +98,7 @@ class ListenBrainz:
     def similar_artists(self, artist_mbid: str, ttl: int) -> list[dict[str, Any]]:
         data = self.http.get_json("labs", f"{self.labs}/similar-artists/json",
                                   {"artist_mbids": artist_mbid, "algorithm": self.cfg.similar_artists_algorithm},
-                                  ttl=ttl)
+                                  ttl=ttl, optional=True)
         rows = [r for r in _flatten(data) if (r.get("artist_mbid") or "") != artist_mbid]
         rows.sort(key=lambda r: -float(r.get("score") or 0))
         return rows
@@ -97,7 +106,7 @@ class ListenBrainz:
     def similar_recordings(self, recording_mbid: str, ttl: int) -> list[dict[str, Any]]:
         data = self.http.get_json("labs", f"{self.labs}/similar-recordings/json",
                                   {"recording_mbids": recording_mbid,
-                                   "algorithm": self.cfg.similar_recordings_algorithm}, ttl=ttl)
+                                   "algorithm": self.cfg.similar_recordings_algorithm}, ttl=ttl, optional=True)
         rows = [r for r in _flatten(data) if (r.get("recording_mbid") or "") != recording_mbid]
         rows.sort(key=lambda r: -float(r.get("score") or 0))
         return rows

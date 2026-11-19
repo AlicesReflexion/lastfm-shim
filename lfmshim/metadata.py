@@ -83,21 +83,52 @@ def artist_matches(wanted: str | None, credits: list[dict[str, Any]] | None) -> 
 
 
 def merged_tags(entity: dict[str, Any] | None) -> list[tuple[str, int]]:
+    """Genres first (curated vocabulary), then free-form tags, each by votes."""
+    genres = _tag_counts((entity or {}).get("genres"))
+    tags = [t for t in _tag_counts((entity or {}).get("tags")) if t[0].casefold() not in
+            {g[0].casefold() for g in genres}]
+    return genres + tags
+
+
+def _tag_counts(items: list[dict[str, Any]] | None) -> list[tuple[str, int]]:
     counts: dict[str, tuple[str, int]] = {}
-    for key in ("genres", "tags"):
-        for t in (entity or {}).get(key) or []:
-            name = (t.get("name") or "").strip()
-            if not name:
-                continue
-            k = name.casefold()
-            c = int(t.get("count") or 0)
-            if k not in counts or counts[k][1] < c:
-                counts[k] = (name, c)
+    for t in items or []:
+        name = (t.get("name") or "").strip()
+        if not name:
+            continue
+        k = name.casefold()
+        c = int(t.get("count") or 0)
+        if k not in counts or counts[k][1] < c:
+            counts[k] = (name, c)
     return sorted(counts.values(), key=lambda x: (-x[1], x[0]))
 
 
 def _date_key(date: str | None) -> str:
     return date if date else "9999"
+
+
+_VERSION_WORDS = re.compile(r"(live|demo|remix|mix|edit|version|acoustic|instrumental|karaoke|cover|"
+                            r"rehearsal|session|mono|remaster(ed)?)", re.IGNORECASE)
+
+
+def release_rank(r: dict[str, Any]) -> tuple:
+    rg = r.get("release-group") or {}
+    status = 0 if (r.get("status") or "").lower() == "official" else 1
+    primary = PRIMARY_RANK.get((rg.get("primary-type") or "other").lower(), 5)
+    secondary = sum(SECONDARY_PENALTY.get(s.lower(), 1) for s in rg.get("secondary-types") or [])
+    return (status, secondary, primary, _date_key(r.get("date")))
+
+
+def recording_rank(rec: dict[str, Any]) -> tuple:
+    """Lower is more canonical: plain recordings on official studio albums."""
+    variant = 1 if _VERSION_WORDS.search(rec.get("disambiguation") or "") else 0
+    releases = rec.get("releases") or []
+    ranks = [release_rank(r) for r in releases]
+    best = min(ranks, default=(2, 99, 9, "9999"))
+    # Canonical recordings are reissued on many official releases; partial
+    # dates ("1991") would otherwise beat full ones ("1991-09-24").
+    same_class = sum(1 for r in ranks if r[:3] == best[:3])
+    return (variant,) + best[:3] + (-same_class, best[3])
 
 
 class Resolver:
@@ -172,6 +203,15 @@ class Resolver:
         if int(best.get("score") or 0) >= 85 and similar(name, best.get("name", "")) >= 0.8:
             return best["id"]
         return ""
+
+    def artist_mbid(self, name: str) -> str:
+        """Resolved artist MBID for a name (one search, cached), or ''."""
+        key = "artist:" + norm(name)
+        chosen = self._cached_choice(key)
+        if chosen is None:
+            chosen = self._search_artist(name)
+            self._remember(key, chosen)
+        return chosen
 
     def correction(self, name: str) -> dict[str, Any] | None:
         return self.artist(name=name)
@@ -254,7 +294,22 @@ class Resolver:
         return self.mb.recording(chosen, cache_only=cache_only) if chosen else None
 
     def _search_track(self, artist: str | None, track: str) -> str:
-        results = (self.mb.search_recordings(track, artist, limit=25).get("recordings")) or []
+        # Popular songs have hundreds of equally-scored (often bootleg) recordings,
+        # so first narrow by the resolved artist MBID and official album releases,
+        # then widen.
+        arid = self.artist_mbid(artist) if artist else ""
+        attempts = []
+        if arid:
+            attempts.append(lambda: self.mb.search_recordings_by_artist_id(track, arid, True))
+            attempts.append(lambda: self.mb.search_recordings_by_artist_id(track, arid, False))
+        attempts.append(lambda: self.mb.search_recordings(track, artist, limit=50))
+        for attempt in attempts:
+            chosen = self._pick_track(artist, track, attempt().get("recordings") or [])
+            if chosen:
+                return chosen
+        return ""
+
+    def _pick_track(self, artist: str | None, track: str, results: list[dict[str, Any]]) -> str:
         results = [r for r in results if not r.get("video") and artist_matches(artist, r.get("artist-credit"))]
         if not results:
             return ""
@@ -262,8 +317,13 @@ class Resolver:
         exact = [r for r in results if norm(r.get("title")) == n]
         loose_hits = exact or [r for r in results if norm(base_title(r.get("title", ""))) == nb]
         if loose_hits:
+            # Order by release evidence first (official studio album, earliest),
+            # so the choice is sensible even when ListenBrainz popularity is
+            # unavailable; popularity then decides among the candidates, since
+            # ListenBrainz maps listens onto the canonical recording.
             with_releases = [r for r in loose_hits if r.get("releases")] or loose_hits
-            return self._pick_by_popularity("recording", with_releases[:10])["id"]
+            with_releases.sort(key=recording_rank)
+            return self._pick_by_popularity("recording", with_releases)["id"]
         best = results[0]
         if int(best.get("score") or 0) >= 85 and similar(track, best.get("title", "")) >= 0.85:
             return best["id"]
@@ -280,11 +340,4 @@ class Resolver:
             if hinted:
                 releases = hinted
 
-        def rank(r: dict[str, Any]) -> tuple:
-            rg = r.get("release-group") or {}
-            status = 0 if (r.get("status") or "").lower() == "official" else 1
-            primary = PRIMARY_RANK.get((rg.get("primary-type") or "other").lower(), 5)
-            secondary = sum(SECONDARY_PENALTY.get(s.lower(), 1) for s in rg.get("secondary-types") or [])
-            return (status, secondary, primary, _date_key(r.get("date")))
-
-        return sorted(releases, key=rank)[0]
+        return sorted(releases, key=release_rank)[0]

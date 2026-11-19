@@ -91,8 +91,13 @@ class UpstreamConfig:
     contact: str = ""
     offline: bool = False
     timeout: float = 15.0
+    # Enrichment (popularity, similarity, images, wikis, covers): short timeout,
+    # failures cached for failure_cache_ttl seconds.
+    optional_timeout: float = 3.0
+    failure_cache_ttl: int = 300
     musicbrainz_url: str = "https://musicbrainz.org/ws/2"
-    musicbrainz_rate: float = 1.0  # requests per second
+    # MusicBrainz allows 1 request/s on average; keep a margin (503s seen at exactly 1/s).
+    musicbrainz_rate: float = 0.9
     coverart_url: str = "https://coverartarchive.org"
     wikipedia_lang: str = "en"
     wikipedia_url: str = ""  # default https://{lang}.wikipedia.org

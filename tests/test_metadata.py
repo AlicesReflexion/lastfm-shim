@@ -1,5 +1,6 @@
 import json
 import unittest
+from urllib.parse import unquote
 import xml.etree.ElementTree as ET
 
 from lfmshim.errors import UpstreamError
@@ -19,7 +20,8 @@ class HttpClientTests(unittest.TestCase):
         app.mb.artist(F.NIRVANA_US)
         app.mb.artist(F.CHER)  # cached
         self.assertEqual(len(t.calls), 2)
-        self.assertEqual(clock.slept, [1.0])  # second MB request waited 1s
+        self.assertEqual(len(clock.slept), 1)  # second MB request was paced (0.9 req/s)
+        self.assertAlmostEqual(clock.slept[0], 1 / 0.9, places=4)
         ua = t.calls[0][2]["User-Agent"]
         self.assertIn("lfmshim/", ua)
         self.assertIn("tests@example.invalid", ua)
@@ -41,6 +43,20 @@ class HttpClientTests(unittest.TestCase):
         t2 = FakeTransport().add_json(f"{F.MB}/artist/{F.CHER}", {}, status=500)
         with self.assertRaises(UpstreamError):
             make_app(t2).mb.artist(F.CHER)
+
+    def test_optional_failure_is_cached_and_degrades(self):
+        calls = []
+
+        def boom(*a):
+            calls.append(a)
+            raise UpstreamError("api.listenbrainz.org", "network error: timed out")
+
+        t = FakeTransport().add(f"{F.LB}/1/popularity/artist", boom, method="POST")
+        app = make_app(t)
+        self.assertEqual(app.lb.artist_popularity([F.CHER], 100), {})
+        self.assertEqual(app.lb.artist_popularity([F.CHER], 100), {})
+        self.assertEqual(len(calls), 1)  # failure cached: no stall on every request
+        self.assertEqual(t.timeouts, [3.0])  # short timeout for optional data
 
     def test_offline_mode(self):
         app = make_app(upstream={"offline": True})
@@ -184,6 +200,32 @@ class AlbumTrackTests(unittest.TestCase):
         _, body = call(self.app, "track.getCorrection", artist="cher", track="believe")
         c = body["corrections"]["correction"]
         self.assertEqual(c["@attr"], {"index": "0", "artistcorrected": "1", "trackcorrected": "1"})
+
+    def test_track_choice_without_popularity_prefers_studio_album(self):
+        # Regression from a live check: with ListenBrainz popularity timing out,
+        # MusicBrainz search order picked live/bootleg versions.
+        t = F.install_cher(FakeTransport())  # provides the Nirvana artist search
+        credit = [{"name": "Nirvana", "artist": {"id": F.NIRVANA_US, "name": "Nirvana"}}]
+        live = {"id": "aaaaaaaa-0000-0000-0000-00000000000a", "title": "Smells Like Teen Spirit", "score": 100,
+                "artist-credit": credit, "disambiguation": "live, 1991-09-16: Seattle",
+                "releases": [{"id": "r-live", "status": "Bootleg", "date": "1991",
+                              "release-group": {"primary-type": "Album", "secondary-types": ["Live"]}}]}
+        comp = {"id": "aaaaaaaa-0000-0000-0000-00000000000b", "title": "Smells Like Teen Spirit", "score": 100,
+                "artist-credit": credit,
+                "releases": [{"id": "r-comp", "status": "Official", "date": "2002",
+                              "release-group": {"primary-type": "Album", "secondary-types": ["Compilation"]}}]}
+        studio = {"id": "aaaaaaaa-0000-0000-0000-00000000000c", "title": "Smells Like Teen Spirit", "score": 98,
+                  "artist-credit": credit,
+                  "releases": [{"id": "r-nev", "status": "Official", "date": "1991-09-24",
+                                "release-group": {"primary-type": "Album", "secondary-types": []}}]}
+        t.add_json(f"{F.MB}/recording", {"count": 3, "recordings": [live, comp, studio]})
+        t.add_json(f"{F.LB}/1/popularity/recording", {}, status=500, method="POST")
+        t.add_json(f"{F.MB}/recording/{studio['id']}", dict(studio, length=301000))
+        app = make_app(t)
+        rec = app.resolver.track(artist="Nirvana", track="Smells Like Teen Spirit")
+        self.assertEqual(rec["id"], studio["id"])
+        first_query = unquote(t.urls("/ws/2/recording?")[0]).replace("+", " ")
+        self.assertIn(f"arid:{F.NIRVANA_US} AND status:official AND primarytype:album", first_query)
 
     def test_missing_params(self):
         _, body = call(self.app, "album.getInfo", artist="Cher")

@@ -40,6 +40,7 @@ class FakeTransport:
     def __init__(self):
         self.routes: list[tuple[str, str, Any]] = []
         self.calls: list[tuple[str, str, dict[str, str], bytes | None]] = []
+        self.timeouts: list[float] = []
 
     def add(self, url_prefix: str, response: Any, method: str = "GET") -> "FakeTransport":
         self.routes.insert(0, (method, url_prefix, response))
@@ -50,6 +51,7 @@ class FakeTransport:
 
     def request(self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float):
         self.calls.append((method, url, dict(headers), body))
+        self.timeouts.append(timeout)
         for m, prefix, resp in self.routes:
             if m == method and _matches(url, prefix):
                 if callable(resp):
