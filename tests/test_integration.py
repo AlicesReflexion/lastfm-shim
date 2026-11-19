@@ -213,6 +213,23 @@ class CliTests(unittest.TestCase):
         self.assertIn("carol (password set)", out.stdout)
         shutil.rmtree(d, ignore_errors=True)
 
+    def test_readme_quick_start_with_copied_example_config(self):
+        # README: cp config.example.toml config.toml; --config config.toml adduser/serve.
+        d = tempfile.mkdtemp()
+        try:
+            shutil.copy(ROOT / "config.example.toml", os.path.join(d, "config.toml"))
+            cfg = os.path.join(d, "config.toml")
+            out = self.run_cli("--config", cfg, "adduser", "me", "--password-stdin", stdin="a long password\n",
+                               data_dir=d)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            out = self.run_cli("--config", cfg, "users", data_dir=d)
+            self.assertIn("me (password set)", out.stdout)
+            from lfmshim.config import load_config
+            loaded = load_config(cfg, env={})
+            self.assertEqual((loaded.server.host, loaded.server.port), ("127.0.0.1", 9549))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
     def test_outbox_command_shows_and_drops_held_items(self):
         from lfmshim.store import Store
         d = tempfile.mkdtemp()

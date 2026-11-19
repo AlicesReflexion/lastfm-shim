@@ -50,8 +50,8 @@ numbers (`listeners`, `playcount`) are ListenBrainz figures, not Last.fm figures
 | `album.search` | approximate | MusicBrainz relevance ranking. Covers only when cached. |
 | `artist.addTags` | full | Local. |
 | `artist.getCorrection` | full | Canonical MusicBrainz name. Returns an empty `corrections` when the input is already canonical. |
-| `artist.getInfo` | full | MusicBrainz identity and tags. Bio from Wikipedia via the MusicBrainz wikipedia/wikidata relations (CC BY-SA attribution included). Image from TheAudioDB. `stats` from ListenBrainz. `similar` from ListenBrainz Labs. `ontour` is always 0. `bio.published` is the Wikipedia revision time. |
-| `artist.getSimilar` | approximate | ListenBrainz Labs session-based similarity. `match` is the score normalised to the top result. |
+| `artist.getInfo` | full | MusicBrainz identity and tags. Bio from Wikipedia via the MusicBrainz wikipedia/wikidata relations (CC BY-SA attribution included). Image from TheAudioDB. `stats` from ListenBrainz. `similar` from ListenBrainz Labs. `ontour` is always 0. `bio.published` is the Wikipedia revision time. Similar artists come without images (see `artist.getSimilar`). |
+| `artist.getSimilar` | approximate | ListenBrainz Labs session-based similarity. `match` is the score normalised to the top result (`"1"` for the first). Images appear only for artists whose TheAudioDB image is already cached (for example from an earlier `artist.getInfo`); fetching them would cost about 2 s per artist at TheAudioDB's free-key rate, so the list is usually imageless. |
 | `artist.getTags` | full | Local. |
 | `artist.getTopAlbums` | approximate | ListenBrainz top release groups (all-time listens). **Needs `listenbrainz.token`**: this endpoint answers HTTP 401 without one (observed 2026-11-19), and the list is then empty. |
 | `artist.getTopTags` | full | MusicBrainz tags and genres. |
@@ -82,7 +82,7 @@ numbers (`listeners`, `playcount`) are ListenBrainz figures, not Last.fm figures
 | `track.getTopTags` | full | MusicBrainz recording tags and genres. |
 | `track.love` | full | Local. Optional ListenBrainz feedback (score 1); the recording MBID is resolved if not given. |
 | `track.removeTag` | full | Local. |
-| `track.scrobble` | full | Array notation, at most 50 per call. Ignore codes 1 (no artist), 2 (no track), 3 (older than `api.scrobble_max_age`, default 14 days), 4 (more than 10 min in the future). Duplicates are accepted once (safe client retries). `corrected` is always 0. Optional ListenBrainz forwarding: one accepted scrobble is sent as `single`, a batch as one `import`. |
+| `track.scrobble` | full | Array notation, at most 50 per call. Ignore codes 1 (no artist), 2 (no track), 3 (older than `api.scrobble_max_age`, default 14 days), 4 (more than 10 min in the future). Duplicates are accepted once (safe client retries). Each call, batch included, is stored together with its forwarding in one transaction. `corrected` is always 0. Optional ListenBrainz forwarding: one accepted scrobble is sent as `single`, a batch as one `import`. |
 | `track.search` | approximate | MusicBrainz relevance. `artist` narrows results. Images are empty. |
 | `track.unlove` | full | Local. Optional ListenBrainz feedback score 0. |
 | `track.updateNowPlaying` | full | Local, expires after `duration` (default 10 min), and is cleared when the track is scrobbled. Optional ListenBrainz `playing_now`; dropped rather than retried once stale. |
@@ -116,6 +116,24 @@ Clients that already hold a **real Last.fm session key** can keep it. Set
 is adopted for that local user. The key's hash is stored; the key itself never is.
 Only enable this on a single-user loopback install: any local process that can reach the
 port can then write as that user.
+
+## Live smoke test
+
+On 2026-11-19 the shim ran against the real key-free upstream services (MusicBrainz,
+ListenBrainz and ListenBrainz Labs without a token, TheAudioDB's public key `123`, Wikipedia,
+Cover Art Archive), with read-only requests only:
+
+| Check | Result |
+| --- | --- |
+| `artist.getInfo` Cher, Radiohead | MBID, TheAudioDB image, Wikipedia bio, ListenBrainz `stats` and 5 `similar` names all present. |
+| `artist.getSimilar` Cher, Radiohead | Works: Madonna, Britney Spears, Michael Jackson… for Cher; Nirvana, Red Hot Chili Peppers, Muse for Radiohead. |
+| Similar-artist images | **Gap**: empty in both methods, because they read only cached images. |
+| Top `match` | Was `"1."`; fixed to `"1"`. |
+| `artist.search` Cher, limit 1 | One-element `artistmatches.artist` array, as live Last.fm. |
+| MusicBrainz pacing | Several HTTP 503 responses at 0.9 requests/s, each retried successfully after the backoff. Cold lookups are slow, not failing. |
+
+`artist.getTopTracks` and `artist.getTopAlbums` were not re-checked: they need a ListenBrainz
+token (see their rows above).
 
 ## Observations used
 
