@@ -75,7 +75,7 @@ def handle(app: Any, http_method: str, params: dict[str, str], headers: dict[str
         return _render_error(err, fmt, callback)
     except UpstreamError as err:
         log.warning("%s %s upstream failure: %s", http_method, name, err)
-        return _render_error(LastFmError(E.OPERATION_FAILED, "Operation failed - Upstream metadata service error"),
+        return _render_error(LastFmError(E.TEMPORARY_ERROR),
                              fmt, callback)
     except Exception:  # pragma: no cover - defensive
         log.exception("%s %s crashed (params=%r)", http_method, name, redact(params))

@@ -24,8 +24,21 @@ class App:
         self._init_services()
 
     def _init_services(self) -> None:
-        """Hook for upstream services (filled in by later modules)."""
         from . import api  # noqa: F401  (registers methods)
+        from .metadata import Resolver
+        from .upstream.http import HttpClient
+        from .upstream.listenbrainz import ListenBrainz
+        from .upstream.musicbrainz import MusicBrainz
+        from .upstream.sources import CoverArtArchive, TheAudioDB, Wikipedia
+
+        up = self.config.upstream
+        self.http = HttpClient(self)
+        self.mb = MusicBrainz(self.http, up.musicbrainz_url)
+        self.lb = ListenBrainz(self.http, self.config.listenbrainz)
+        self.wiki = Wikipedia(self.http, up.wikipedia_lang, up.wikipedia_url, up.wikidata_url)
+        self.tadb = TheAudioDB(self.http, up.theaudiodb_url, up.theaudiodb_key, up.theaudiodb_enabled)
+        self.caa = CoverArtArchive(self.http, up.coverart_url)
+        self.resolver = Resolver(self)
 
     def now(self) -> int:
         return int(self.clock())
