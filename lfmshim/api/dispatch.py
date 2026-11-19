@@ -51,7 +51,7 @@ def _render(result: Any, fmt: str, callback: str | None, collapse: bool) -> Resp
 
 def _render_error(err: LastFmError, fmt: str, callback: str | None) -> Response:
     if fmt == "json":
-        body = error_json(err.code, err.message)
+        body = error_json(err.code, err.message, err.links)
         if callback:
             return Response(200, "text/javascript; charset=utf-8", callback.encode() + b"(" + body + b");")
         return Response(err.http_status, "application/json; charset=utf-8", body)
@@ -117,14 +117,14 @@ def _check_signature(app: Any, params: dict[str, str]) -> None:
 
 def _dispatch(app: Any, http_method: str, params: dict[str, str], headers: dict[str, str], name: str) -> Any:
     cfg = app.config.api
+    api_key = params.get("api_key", "")
+    if not api_key:
+        raise E.missing_api_key()
     if not name:
         raise LastFmError(E.INVALID_METHOD)
     spec = lookup(name)
     if spec is None:
         raise LastFmError(E.INVALID_METHOD)
-    api_key = params.get("api_key", "")
-    if not api_key:
-        raise LastFmError(E.INVALID_API_KEY)
     if cfg.api_keys and api_key not in cfg.api_keys:
         raise LastFmError(E.INVALID_API_KEY)
     req = Request(params=params, app=app, http_method=http_method)

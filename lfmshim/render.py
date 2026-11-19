@@ -10,7 +10,10 @@ which itself is a mechanical transform of the XML:
 * a ``list`` is a repeated element (``<image/><image/>``).
 * scalars are text. ``None`` is an empty element.
 
-JSON output stringifies every scalar, as Last.fm does.
+JSON output stringifies scalars, as Last.fm mostly does. The exceptions are
+values wrapped in :class:`JsonInt` (rendered as JSON numbers) and
+:data:`JSON_NULL` (rendered as ``null``), used only where live Last.fm was
+observed to send them (compat-observations.md).
 """
 
 from __future__ import annotations
@@ -23,8 +26,26 @@ from xml.sax.saxutils import escape, quoteattr
 _XML_INVALID = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]")
 
 
+class JsonInt(int):
+    """An integer Last.fm sends as a JSON number rather than a string."""
+
+
+class _JsonNull:
+    """A value Last.fm sends as JSON ``null``; an empty element in XML."""
+
+    def __repr__(self) -> str:
+        return "JSON_NULL"
+
+
+JSON_NULL = _JsonNull()
+
+
+def json_int_or_null(value: Any) -> Any:
+    return JSON_NULL if value is None else JsonInt(value)
+
+
 def scalar(value: Any) -> str:
-    if value is None:
+    if value is None or value is JSON_NULL:
         return ""
     if isinstance(value, bool):
         return "1" if value else "0"
@@ -93,6 +114,10 @@ def _jsonify(value: Any, collapse_single: bool) -> Any:
         if collapse_single and len(items) == 1:
             return items[0]
         return items
+    if value is JSON_NULL:
+        return None
+    if isinstance(value, JsonInt):
+        return int(value)
     if value is None:
         return ""
     return scalar(value)
@@ -106,8 +131,13 @@ def to_json(result: dict[str, Any] | None, collapse_single: bool = False) -> byt
     return json.dumps(to_json_obj(result, collapse_single), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
-def error_json(code: int, message: str) -> bytes:
-    return json.dumps({"message": message, "error": code, "links": []}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+def error_json(code: int, message: str, links: bool = False) -> bytes:
+    """Last.fm's JSON error. ``links: []`` was observed only on HTTP 200 error-6
+    lookups; HTTP 400/403 errors carry just ``message`` and ``error``."""
+    body: dict[str, Any] = {"message": message, "error": code}
+    if links:
+        body["links"] = []
+    return json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
 _CALLBACK = re.compile(r"^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$")

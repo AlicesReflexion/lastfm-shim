@@ -132,7 +132,7 @@ class ArtistTests(unittest.TestCase):
         sim = body["similarartists"]
         self.assertEqual(sim["@attr"], {"artist": "Cher"})
         self.assertEqual(sim["artist"][0]["name"], "Madonna")
-        self.assertEqual(sim["artist"][0]["match"], "1.")
+        self.assertEqual(sim["artist"][0]["match"], "1")  # not "1."
         _, body = call(self.app, "artist.getTopTags", artist="Cher")
         self.assertEqual(body["toptags"]["tag"][0], {"count": "100", "name": "pop",
                                                      "url": "https://www.last.fm/tag/pop"})
@@ -168,8 +168,9 @@ class AlbumTrackTests(unittest.TestCase):
         self.assertEqual(a["image"][0]["#text"], "https://coverartarchive.org/release/x/1-250.jpg")
         self.assertEqual(a["image"][4]["#text"], "https://coverartarchive.org/release/x/1-1200.jpg")
         self.assertEqual([t["name"] for t in a["tracks"]["track"]], ["Believe", "The Power"])
-        self.assertEqual(a["tracks"]["track"][0]["duration"], "239")
-        self.assertEqual(a["tracks"]["track"][1]["@attr"], {"rank": "2"})
+        # Observed live (Cher / Believe): JSON integers, not strings.
+        self.assertEqual(a["tracks"]["track"][0]["duration"], 239)
+        self.assertEqual(a["tracks"]["track"][1]["@attr"], {"rank": 2})
         self.assertEqual(a["listeners"], "7000")
         self.assertEqual(a["tags"]["tag"][0]["name"], "dance-pop")
 
@@ -232,6 +233,71 @@ class AlbumTrackTests(unittest.TestCase):
         self.assertEqual(body["error"], 6)
         _, body = call(self.app, "track.getInfo", track="x")
         self.assertEqual(body["error"], 6)
+
+
+class LiveShapeRegressionTests(unittest.TestCase):
+    """JSON shapes observed in read-only live Last.fm probes (compat-observations.md)."""
+
+    def setUp(self):
+        self.t = F.install_believe(F.install_cher(FakeTransport()))
+        self.t.add_json(f"{F.LB}/1/popularity/top-recordings-for-artist/{F.CHER}", [
+            {"recording_mbid": F.BELIEVE_REC, "recording_name": "Believe", "total_listen_count": 10,
+             "total_user_count": 5}])
+        self.t.add_json(f"{F.LB}/1/stats/sitewide/recordings", {"payload": {
+            "recordings": [{"track_name": "Song", "artist_name": "X", "artist_mbids": ["m1"],
+                            "recording_mbid": "r1", "listen_count": 50}], "total_recording_count": 1}})
+        self.app = make_app(self.t)
+
+    def test_album_track_duration_and_rank_are_json_numbers(self):
+        _, body = call(self.app, "album.getInfo", artist="Cher", album="Believe")
+        track = body["album"]["tracks"]["track"][0]
+        self.assertIs(type(track["duration"]), int)
+        self.assertIs(type(track["@attr"]["rank"]), int)
+        self.assertEqual(body["album"]["listeners"], "7000")  # other numbers stay strings
+        _, xml = call(self.app, "album.getInfo", fmt=None, artist="Cher", album="Believe")
+        root = ET.fromstring(xml)
+        self.assertEqual(root.findtext("album/tracks/track/duration"), "239")
+        self.assertEqual(root.find("album/tracks/track").get("rank"), "1")
+
+    def test_album_track_unknown_duration_is_null(self):
+        release = json.loads(self.t.request("GET", f"{F.MB}/release/{F.BELIEVE_REL}", {}, None, 1)[2])
+        release["media"][0]["tracks"].append({"position": 3, "title": "Untimed",
+                                              "recording": {"id": "c3f6e0b2-0000-0000-0000-000000000009",
+                                                            "title": "Untimed"}})
+        self.t.add_json(f"{F.MB}/release/{F.BELIEVE_REL}", release)
+        _, body = call(self.app, "album.getInfo", artist="Cher", album="Believe")
+        self.assertIsNone(body["album"]["tracks"]["track"][2]["duration"])
+        _, xml = call(self.app, "album.getInfo", fmt=None, artist="Cher", album="Believe")
+        self.assertIn("<duration/>", xml)
+
+    def test_artist_top_tracks_rank_is_string(self):
+        _, body = call(self.app, "artist.getTopTracks", artist="Cher", limit=1)
+        self.assertEqual(body["toptracks"]["track"][0]["@attr"], {"rank": "1"})
+
+    def test_single_item_results_are_arrays(self):
+        # Observed live with limit=1: each of these returned a one-element array.
+        app = self.app
+        app.store.add_user("alice")
+        app.store.add_scrobble("alice", {"artist": "Cher", "track": "Believe", "timestamp": app.now() - 60})
+        cases = [
+            (("artist.search", {"artist": "Cher"}), ("results", "artistmatches", "artist")),
+            (("artist.getSimilar", {"artist": "Cher"}), ("similarartists", "artist")),
+            (("artist.getTopTracks", {"artist": "Cher"}), ("toptracks", "track")),
+            (("chart.getTopTracks", {}), ("tracks", "track")),
+            (("user.getRecentTracks", {"user": "alice"}), ("recenttracks", "track")),
+        ]
+        for (name, params), path in cases:
+            with self.subTest(name):
+                if name == "artist.search":  # the shared fake ignores limit
+                    self.t.add_json(f"{F.MB}/artist?limit=1", {"count": 38, "artists": [F.cher_artist()]})
+                _, body = call(app, name, limit=1, **params)
+                if name == "artist.search":
+                    self.t.routes.pop(0)
+                node = body
+                for key in path:
+                    node = node[key]
+                self.assertIsInstance(node, list)
+                self.assertEqual(len(node), 1)
 
 
 if __name__ == "__main__":

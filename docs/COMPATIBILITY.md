@@ -26,12 +26,12 @@ numbers (`listeners`, `playcount`) are ListenBrainz figures, not Last.fm figures
 | Method names | Case-insensitive (`artist.getinfo` works). | full |
 | Format | XML by default. `format=json` gives JSON. `callback=` gives JSONP (identifier-validated). | full |
 | XML envelope | `<lfm status="ok">` / `<lfm status="failed"><error code="N">`. | full (observed) |
-| JSON errors | `{"message": …, "error": N, "links": []}`. | full (observed for error 6) |
-| HTTP status | Error 6 → **200**, error 3 → **400** (both observed). Others: 403 for auth/session/signature/key, 429 for error 29, 503 for errors 11/16, 500 for error 8 (not yet observed). | partly observed |
-| JSON scalars | All values are strings, as on Last.fm. | full |
-| One-item lists | Rendered as JSON arrays by default. `api.json_collapse_single = true` renders them as objects (the classic Last.fm quirk). Live behaviour not yet observed. | configurable |
+| JSON errors | `{"message": …, "error": N}`. Error 6 raised by a method (HTTP 200) also carries `"links": []`; HTTP 400/403 errors do not. | full (observed for errors 3, 6, 10) |
+| HTTP status | Error 6 from a method → **200**. Missing `api_key` → error **6** with **400** (checked before the method name). Error 3 → **400**. Error 10 → **403**. All observed. Others (not yet observed): 403 for auth/session/signature, 429 for error 29, 503 for errors 11/16, 500 for error 8. | partly observed |
+| JSON scalars | Strings, as on Last.fm, except where Last.fm was seen to send numbers: `album.getInfo` `tracks.track[].duration` and `@attr.rank` are JSON integers (an unknown duration is `null`). Ranks elsewhere, such as `artist.getTopTracks`, stay strings. Other fields were not checked. | partly observed |
+| One-item lists | Rendered as JSON arrays by default. This matches live Last.fm for `artist.search`, `artist.getSimilar`, `artist.getTopTracks`, `chart.getTopTracks` and `user.getRecentTracks` with `limit=1` (observed). `api.json_collapse_single = true` renders them as objects instead, for old clients written against that quirk. | full (observed) |
 | `opensearch:` XML | The shim declares `xmlns:opensearch`. Live Last.fm does not, so strict parsers reject its XML (observed). | intentional difference |
-| `api_key` | Required (error 10 if missing). Any key is accepted unless `api.api_keys` allowlists some. | full |
+| `api_key` | Required (error 6, HTTP 400 if missing, as observed). Any key is accepted unless `api.api_keys` allowlists some; others get error 10. | full |
 | `api_sig` | Verified when the client's secret is in `api.clients`. Policies: `verify-known` (default), `strict`, `off`. | full |
 | Write methods | Must be POST (error 3 otherwise). Signed, with a valid `sk` (error 9 otherwise). | full |
 | Cross-site browser requests | Write and auth calls carrying a foreign `Origin` or `Sec-Fetch-Site: cross-site` are refused (error 4). Unknown `Host` headers get HTTP 421 (DNS-rebinding guard). | shim-specific |
@@ -120,6 +120,8 @@ port can then write as that user.
 ## Observations used
 
 `compat-observations.md` (read-only live probes, 2026-11-19) set these choices: HTTP 200
-for error 6, HTTP 400 for error 3, `links: []` in JSON errors, six images, the
+for method-level error 6 with `links: []`, HTTP 400 without `links` for error 3 and for a
+missing `api_key` (error 6), HTTP 403 for error 10, integer `duration`/`rank` in
+`album.getInfo` tracks, one-element arrays for single results, six images, the
 `opensearch:` keys and `@attr.for` on searches, and `similarartists@artist`. Write methods
 were not probed live. Their envelopes follow the published documentation.

@@ -6,11 +6,18 @@ from typing import Any
 
 from ..errors import INVALID_PARAMS, LastFmError, UpstreamError, not_found
 from ..metadata import Resolver, credit_name, merged_tags, norm, primary_artist
+from ..render import JsonInt, json_int_or_null
 from .common import (artist_images, cover_images, images, lfm_url, opensearch, paging_attr, tag_url, toptags,
                      user_url, wiki)
 from .registry import Request, method
 
 STREAMABLE = {"#text": "0", "fulltrack": "0"}
+
+
+def match_score(score: float, top: float) -> str:
+    """Last.fm-style match string: "1" for the top result, else up to 6 decimals."""
+    text = f"{score / top:.6f}".rstrip("0").rstrip(".")
+    return text or "0"
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +131,7 @@ def _similar_artists(req: Request, mbid: str, limit: int, cache_only_images: boo
     for r in rows:
         name = r.get("name") or r.get("artist_name")
         m = r.get("artist_mbid") or ""
-        out.append({"name": name, "mbid": m, "match": f"{float(r.get('score') or 0) / top:.6f}".rstrip("0"),
+        out.append({"name": name, "mbid": m, "match": match_score(float(r.get("score") or 0), top),
                     "url": lfm_url(name), "image": artist_image_list(req, m, cache_only=cache_only_images),
                     "streamable": "0"})
     return out
@@ -272,9 +279,13 @@ def album_get_info(req: Request):
             pa = primary_artist(credits) if credits else {"name": artist, "mbid": ""}
             tname = t.get("title") or (t.get("recording") or {}).get("title") or ""
             length = t.get("length") or (t.get("recording") or {}).get("length")
-            tracks.append({"streamable": dict(STREAMABLE), "duration": int(length / 1000) if length else None,
+            # Observed live: duration and @attr.rank are JSON numbers here
+            # (unlike most Last.fm values); an unknown duration is null.
+            tracks.append({"streamable": dict(STREAMABLE),
+                           "duration": json_int_or_null(int(length / 1000) if length else None),
                            "url": lfm_url(pa["name"] or artist, "_", tname), "name": tname,
-                           "@attr": {"rank": rank}, "artist": artist_ref(pa["name"] or artist, pa["mbid"])})
+                           "@attr": {"rank": JsonInt(rank)},
+                           "artist": artist_ref(pa["name"] or artist, pa["mbid"])})
     out: dict[str, Any] = {
         "artist": artist, "mbid": release_mbid or rg_mbid, "tags": {"tag": toptags(merged_tags(data["release_group"]
                                                                                                or rel), 5)},
@@ -387,7 +398,7 @@ def track_get_similar(req: Request):
         aname = r.get("artist_credit_name") or r.get("artist_name") or ""
         ambids = r.get("artist_credit_mbids") or r.get("artist_mbids") or []
         tracks.append({"name": tname, "playcount": 0, "mbid": r.get("recording_mbid") or "",
-                       "match": f"{float(r.get('score') or 0) / top:.6f}".rstrip("0"),
+                       "match": match_score(float(r.get("score") or 0), top),
                        "url": lfm_url(aname, "_", tname), "streamable": dict(STREAMABLE),
                        "duration": int((r.get("length") or 0) / 1000) or None,
                        "artist": artist_ref(aname, ambids[0] if ambids else ""),

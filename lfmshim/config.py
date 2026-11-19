@@ -64,7 +64,8 @@ class ApiConfig:
     # real Last.fm session) and map them to default_user.
     accept_unknown_sessions: bool = False
     default_user: str = ""
-    # Render one-element lists as an object in JSON (classic Last.fm quirk).
+    # Render one-element lists as an object in JSON (an old Last.fm quirk; live
+    # Last.fm was observed sending one-element arrays, so the default is off).
     json_collapse_single: bool = False
     # Reject scrobbles older than this many seconds (Last.fm: 14 days). 0 = off.
     scrobble_max_age: int = 14 * 24 * 3600

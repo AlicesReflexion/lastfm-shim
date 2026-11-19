@@ -88,9 +88,9 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(status, 200)
 
     def test_unknown_method_error3(self):
+        # Observed live: HTTP 400 with only message/error (no links).
         status, body = call(self.app, "nope.nothing")
-        self.assertEqual(body, {"message": "Invalid Method - No method with that name in this package", "error": 3,
-                                "links": []})
+        self.assertEqual(body, {"message": "Invalid Method - No method with that name in this package", "error": 3})
         self.assertEqual(status, 400)
 
     def test_error_xml(self):
@@ -103,14 +103,24 @@ class DispatchTests(unittest.TestCase):
         status, body = call(self.app, "test.echo")
         self.assertEqual((status, body["error"], body["links"]), (200, 6, []))  # observed: HTTP 200
 
-    def test_missing_api_key_error10(self):
-        resp = handle(self.app, "GET", {"method": "test.echo", "value": "x", "format": "json"})
-        self.assertEqual(json.loads(resp.body)["error"], 10)
+    def test_missing_api_key_error6_http400(self):
+        # Observed live: error 6, HTTP 400, only message/error -- also for an
+        # unknown method, because the key is checked first.
+        for name in ("test.echo", "nope.nothing"):
+            resp = handle(self.app, "GET", {"method": name, "value": "x", "format": "json"})
+            self.assertEqual(resp.status, 400)
+            self.assertEqual(json.loads(resp.body), {
+                "message": "Invalid parameters - Your request is missing a required parameter", "error": 6})
+        resp = handle(self.app, "GET", {"method": "test.echo", "value": "x"})
+        self.assertEqual((resp.status, ET.fromstring(resp.body).find("error").get("code")), (400, "6"))
 
     def test_api_key_allowlist(self):
+        # Observed live for an invalid key: error 10, HTTP 403, no links.
         app = make_app(api={"api_keys": ["other"]})
-        _, body = call(app, "test.echo", value="v")
-        self.assertEqual(body["error"], 10)
+        status, body = call(app, "test.echo", value="v")
+        self.assertEqual((status, body),
+                         (403, {"message": "Invalid API key - You must be granted a valid key by last.fm",
+                                "error": 10}))
 
     def test_jsonp_callback(self):
         resp = handle(self.app, "GET", {"method": "test.echo", "api_key": API_KEY, "format": "json",

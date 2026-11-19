@@ -46,8 +46,10 @@ DEFAULT_MESSAGES = {
 }
 
 # HTTP status sent alongside each error body. Observed (compat-observations.md,
-# 2026-11-19): error 6 (unknown/missing artist) is HTTP 200; unknown method
-# (error 3) is HTTP 400. The remaining values are unobserved approximations.
+# 2026-11-19): error 6 from a method (unknown/missing artist) is HTTP 200;
+# unknown method (error 3) is HTTP 400; invalid api_key (error 10) is HTTP 403.
+# A missing api_key is error 6 with HTTP 400 (see missing_api_key). The
+# remaining values are unobserved approximations.
 HTTP_STATUS = {
     INVALID_SERVICE: 400,
     INVALID_METHOD: 400,
@@ -72,11 +74,20 @@ HTTP_STATUS = {
 class LastFmError(Exception):
     """An error reported to the client in Last.fm's error envelope."""
 
-    def __init__(self, code: int, message: str | None = None, http_status: int | None = None):
+    def __init__(self, code: int, message: str | None = None, http_status: int | None = None,
+                 links: bool | None = None):
         self.code = int(code)
         self.message = message or DEFAULT_MESSAGES.get(self.code, "Unknown error")
         self.http_status = http_status or HTTP_STATUS.get(self.code, 400)
+        # JSON "links": [] was observed only on HTTP 200 error-6 responses.
+        self.links = (self.code == INVALID_PARAMS and self.http_status == 200) if links is None else links
         super().__init__(f"[{self.code}] {self.message}")
+
+
+def missing_api_key() -> LastFmError:
+    """Observed: no api_key gives error 6 with HTTP 400 and no links, even for an
+    unknown method name (the key is checked first)."""
+    return LastFmError(INVALID_PARAMS, DEFAULT_MESSAGES[INVALID_PARAMS], http_status=400)
 
 
 def not_found(kind: str) -> LastFmError:
