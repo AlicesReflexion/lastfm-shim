@@ -68,11 +68,14 @@ def _element(tag: str, value: Any, out: list[str]) -> None:
 
 
 def to_xml(result: dict[str, Any] | None) -> bytes:
-    out = ['<?xml version="1.0" encoding="UTF-8"?>\n<lfm status="ok">']
+    out: list[str] = []
     for k, v in (result or {}).items():
         _element(k, v, out)
-    out.append("</lfm>\n")
-    return "".join(out).encode("utf-8")
+    body = "".join(out)
+    # Last.fm's live XML uses opensearch: prefixes without declaring them, which
+    # strict parsers reject (compat-observations.md); we declare the namespace.
+    ns = ' xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/"' if "<opensearch:" in body else ""
+    return f'<?xml version="1.0" encoding="UTF-8"?>\n<lfm status="ok"{ns}>{body}</lfm>\n'.encode("utf-8")
 
 
 def error_xml(code: int, message: str) -> bytes:
