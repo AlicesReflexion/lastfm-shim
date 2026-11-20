@@ -2,8 +2,8 @@
 
 What the shim implements of the [Last.fm API 2.0](https://www.last.fm/api), and where it
 behaves differently. The shim is **not** Last.fm. It returns Last.fm-shaped responses
-built from open data: MusicBrainz, ListenBrainz, Wikipedia/Wikidata, TheAudioDB and the
-Cover Art Archive. Your listening history, loves and tags come from local storage. Popularity
+built from open data: MusicBrainz, ListenBrainz, Wikipedia/Wikidata, TheAudioDB, Discogs
+and the Cover Art Archive. Your listening history, loves and tags come from local storage. Popularity
 numbers (`listeners`, `playcount`) are ListenBrainz figures, not Last.fm figures.
 
 `python -m lfmshim methods` prints the same list from the running code. A test
@@ -35,6 +35,7 @@ numbers (`listeners`, `playcount`) are ListenBrainz figures, not Last.fm figures
 | `api_sig` | Verified when the client's secret is in `api.clients`. Policies: `verify-known` (default), `strict`, `off`. | full |
 | Write methods | Must be POST (error 3 otherwise). Signed, with a valid `sk` (error 9 otherwise). | full |
 | Cross-site browser requests | Write and auth calls carrying a foreign `Origin` or `Sec-Fetch-Site: cross-site` are refused (error 4). Unknown `Host` headers get HTTP 421 (DNS-rebinding guard). | shim-specific |
+| `tagsources=1` | Shim extension, off by default. On `album.getInfo`, `album.getTopTags`, `artist.getInfo` and `artist.getTopTags`, adds `source` elements to the tag list for attribution (see [Tag sources](#tag-sources-and-attribution)). Without it, responses keep the standard shape. | shim-specific |
 | Images | Six `image` entries (`small`…`mega`, plus an unsized one), as observed in live XML. | full |
 | Upstream outage | When MusicBrainz is down: error 16 (temporary error), so clients retry. Enrichment (popularity, similarity, images, wikis, covers) has a 3 s timeout; on failure those fields are empty or 0, and the failure is cached for 5 min. | shim choice |
 
@@ -43,18 +44,18 @@ numbers (`listeners`, `playcount`) are ListenBrainz figures, not Last.fm figures
 | Method | Status | Source / notes |
 | --- | --- | --- |
 | `album.addTags` | full | Stored locally only. |
-| `album.getInfo` | full | MusicBrainz release group, plus its earliest official release for the tracklist. `mbid` is the release MBID; release or release-group MBIDs are accepted as input. CAA cover, Wikipedia wiki, ListenBrainz release-group stats. |
+| `album.getInfo` | full | MusicBrainz release group, plus its earliest official release for the tracklist. `mbid` is the release MBID; release or release-group MBIDs are accepted as input. CAA cover, Wikipedia wiki, ListenBrainz release-group stats. `tags` as in `album.getTopTags`. |
 | `album.getTags` | full | Local personal tags. |
-| `album.getTopTags` | full | MusicBrainz release-group tags and genres. The top tag has count 100. |
+| `album.getTopTags` | approximate | Discogs styles, then genres, of the master linked from the MusicBrainz release group (else of the release linked from the chosen MB release). Else TheAudioDB's album genre, else MusicBrainz release-group tags and genres. Discogs tags are unranked, so each has count 100. See [Tag sources](#tag-sources-and-attribution). |
 | `album.removeTag` | full | Local. |
 | `album.search` | approximate | MusicBrainz relevance ranking. Covers only when cached. |
 | `artist.addTags` | full | Local. |
 | `artist.getCorrection` | full | Canonical MusicBrainz name. Returns an empty `corrections` when the input is already canonical. |
-| `artist.getInfo` | full | MusicBrainz identity and tags. Bio from Wikipedia via the MusicBrainz wikipedia/wikidata relations (CC BY-SA attribution included). Image from TheAudioDB. `stats` from ListenBrainz. `similar` from ListenBrainz Labs. `ontour` is always 0. `bio.published` is the Wikipedia revision time. Similar artists come without images (see `artist.getSimilar`). |
+| `artist.getInfo` | full | MusicBrainz identity and tags. Bio from Wikipedia via the MusicBrainz wikipedia/wikidata relations (CC BY-SA attribution included). Image from TheAudioDB. `stats` from ListenBrainz. `similar` from ListenBrainz Labs. `ontour` is always 0. `bio.published` is the Wikipedia revision time. Similar artists come without images (see `artist.getSimilar`). `tags` as in `artist.getTopTags`. |
 | `artist.getSimilar` | approximate | ListenBrainz Labs session-based similarity. `match` is the score normalised to the top result (`"1"` for the first). Images appear only for artists whose TheAudioDB image is already cached (for example from an earlier `artist.getInfo`); fetching them would cost about 2 s per artist at TheAudioDB's free-key rate, so the list is usually imageless. |
 | `artist.getTags` | full | Local. |
 | `artist.getTopAlbums` | approximate | ListenBrainz top release groups (all-time listens). **Needs `listenbrainz.token`**: this endpoint answers HTTP 401 without one (observed 2026-11-19), and the list is then empty. |
-| `artist.getTopTags` | full | MusicBrainz tags and genres. |
+| `artist.getTopTags` | approximate | Discogs styles, then genres, each counted once per distinct album over the artist's most-listened studio albums (up to `upstream.discogs_artist_albums`, default 10). Else TheAudioDB's artist genre, else MusicBrainz tags and genres. See [Tag sources](#tag-sources-and-attribution). |
 | `artist.getTopTracks` | approximate | ListenBrainz top recordings (all-time listens). **Needs `listenbrainz.token`** (HTTP 401 without one); the list is empty otherwise. |
 | `artist.removeTag` | full | Local. |
 | `artist.search` | approximate | MusicBrainz relevance, not popularity. `listeners` from ListenBrainz. |
@@ -109,6 +110,47 @@ numbers (`listeners`, `playcount`) are ListenBrainz figures, not Last.fm figures
 - Spelling corrections in scrobble responses (`corrected="1"`).
 - Real Last.fm accounts and data. The shim never contacts Last.fm.
 
+## Tag sources and attribution
+
+Album and artist tags (`album.getInfo`, `album.getTopTags`, `artist.getInfo`,
+`artist.getTopTags`) come from **one** source per list, the first that has data:
+
+| Source | Albums | Artists |
+| --- | --- | --- |
+| 1. Discogs | The master linked from the MusicBrainz release group, else the release linked from the chosen MB release. Styles first, then genres, in Discogs order. Every count is 100, because Discogs does not rank them. | Styles, then genres, of the artist's studio albums: MB release groups with a Discogs link, most ListenBrainz listeners first, up to `upstream.discogs_artist_albums`. A tag counts once per distinct album, and pressings of one master count once. Counts are scaled so the most common tag is 100. Genres follow styles, so counts are not always descending (`alternative rock` 78 can precede `rock` 100). |
+| 2. TheAudioDB | Album `strGenre`. | Artist `strGenre`, from the same lookup as the artist image. |
+| 3. MusicBrainz | Release-group tags and genres, as before. | Artist tags and genres, as before. |
+
+The shim reaches Discogs only through links curated on MusicBrainz, never by a name search,
+and reads it without a token. Without a token Discogs allows 25 requests per minute, so one
+API call makes at most `upstream.discogs_request_budget` (default 2) uncached Discogs lookups.
+The rest are queued once for the background worker. Until the worker has fetched them, an
+artist's tags are counted over the albums cached so far, or come from the fallback sources.
+Repeated calls can therefore show more tags during the first minute or so. Cached lookups last
+`upstream.cache_ttl` (7 days). Track tags (`track.getInfo`, `track.getTopTags`) are still
+MusicBrainz tags. Personal tags (`*.getTags`, `*.addTags`, `*.removeTag`,
+`user.getPersonalTags`) are local and unaffected.
+
+Every tag's `url` is still its Last.fm-style tag page. To show where the tags came from, add
+`tagsources=1` to the request. The tag list then also carries one `source` element per page
+that supplied tags:
+
+```json
+"toptags": {
+  "tag": [{"count": "100", "name": "alternative rock", "url": "https://www.last.fm/tag/alternative+rock"}],
+  "source": [{"name": "Discogs", "provider": "discogs",
+              "url": "https://www.discogs.com/master/3334-Coldplay-Parachutes"}],
+  "@attr": {"artist": "Coldplay", "album": "Parachutes"}
+}
+```
+
+In XML this is `<source><name>Discogs</name><provider>discogs</provider><url>…</url></source>`
+inside `<toptags>` or `<tags>`. `provider` is `discogs`, `theaudiodb` or `musicbrainz`. For
+an artist the list starts with the Discogs artist page (when MusicBrainz links one), followed
+by each album master that contributed. TheAudioDB sources link to `theaudiodb.com/artist/{id}`
+or `/album/{id}`, and MusicBrainz sources to the artist or release-group page. Clients that do
+not send the parameter never see `source`.
+
 ## Session compatibility for existing clients
 
 Clients that already hold a **real Last.fm session key** can keep it. Set
@@ -131,6 +173,15 @@ Cover Art Archive), with read-only requests only:
 | Top `match` | Was `"1."`; fixed to `"1"`. |
 | `artist.search` Cher, limit 1 | One-element `artistmatches.artist` array, as live Last.fm. |
 | MusicBrainz pacing | Several HTTP 503 responses at 0.9 requests/s, each retried successfully after the backoff. Cold lookups are slow, not failing. |
+
+A second read-only check the same day covered the Discogs tag sources, without a Discogs token:
+
+| Check | Result |
+| --- | --- |
+| `album.getTopTags` Coldplay / Parachutes | Discogs master 3334: `alternative rock`, `pop rock`, `rock`, with its source URL. 5.9 s cold. |
+| `album.getInfo` Cher / Believe | Tags from Discogs master 69294 (`dance-pop`, `downtempo`, `techno`, …). |
+| `artist.getTopTags` Radiohead | Cold: 2 albums counted, 6.3 s. The background pass then fetched the queued lookups in 29.8 s. Afterwards: 9 albums, `alternative rock` 78, `experimental` 56, …, `rock` 100, `electronic` 78, answered from the cache. |
+| Cold `artist.getInfo` Kylie Minogue | 7.6 s with Discogs (tags `synth-pop`, `house`, `disco`, …). 4.0 s with `discogs_enabled = false` (tags: `pop`). |
 
 `artist.getTopTracks` and `artist.getTopAlbums` were not re-checked: they need a ListenBrainz
 token (see their rows above).

@@ -7,7 +7,8 @@ scrobblers and music apps keep working without Last.fm. Metadata comes from open
 
 | Data | Source |
 | --- | --- |
-| Artist, album and track identity, tags, MBIDs | MusicBrainz |
+| Artist, album and track identity, MBIDs, track tags | MusicBrainz |
+| Album and artist tags | Discogs styles and genres (through MusicBrainz links), else TheAudioDB genre, else MusicBrainz |
 | Bios and wikis | Wikipedia, through MusicBrainz's Wikipedia/Wikidata links |
 | Artist images | TheAudioDB |
 | Album covers | Cover Art Archive |

@@ -110,6 +110,7 @@ tokens are stored as SHA-256 digests; passwords as salted PBKDF2.
 | --- | --- |
 | MusicBrainz | 0.9 requests/s (policy: 1/s average), honours 503 + `Retry-After` |
 | TheAudioDB | 0.5 requests/s (free key: 30/min) |
+| Discogs | 24/min without a token (Discogs allows 25), 58/min with `upstream.discogs_token` (allows 60). At most `upstream.discogs_request_budget` uncached lookups per API call. A 429 slows later requests down. |
 | ListenBrainz | 2 requests/s, honours 429 + `X-RateLimit-Reset-In` |
 | Cover Art Archive, Wikipedia, Wikidata | 5 requests/s |
 
@@ -120,6 +121,21 @@ artist search, recording search(es) and lookup. Cached responses are immediate, 
 enrichment warms the cache for everything you scrobble. Enrichment sources (ListenBrainz popularity
 and similarity, TheAudioDB, Wikipedia, CAA) get a 3 s timeout (`upstream.optional_timeout`). If one
 is slow or down, its fields come back empty for `upstream.failure_cache_ttl` seconds.
+
+Discogs adds about 3–4 s to a cold `artist.getInfo` or `artist.getTopTags`: one MusicBrainz
+album browse, then up to two Discogs lookups paced 2.5 s apart. Once cached, it adds nothing.
+The background worker fetches the remaining album lookups. To trade freshness for latency, you
+can:
+
+- set `upstream.discogs_request_budget = 0`, so every Discogs lookup runs in the background, or
+  raise it;
+- add a [Discogs personal access token](https://www.discogs.com/settings/developers) as
+  `upstream.discogs_token_file` or `LFMSHIM_UPSTREAM_DISCOGS_TOKEN` (60 requests/min instead
+  of 25);
+- set `upstream.discogs_enabled = false`.
+
+The token is optional, because the shim uses only Discogs' public release and master lookups.
+It is sent only to Discogs and is never logged.
 
 The ListenBrainz token, if configured, is also sent on the read endpoints that now require
 it (`artist.getTopTracks`/`getTopAlbums`).
