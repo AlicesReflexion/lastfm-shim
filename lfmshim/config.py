@@ -106,6 +106,18 @@ class UpstreamConfig:
     theaudiodb_url: str = "https://www.theaudiodb.com/api/v1/json"
     theaudiodb_key: str = field(default="123", repr=False)
     theaudiodb_enabled: bool = True
+    # Discogs genres/styles for album and artist tags, reached only through
+    # MusicBrainz discogs links. No token is needed; one raises the rate limit.
+    discogs_enabled: bool = True
+    discogs_url: str = "https://api.discogs.com"
+    discogs_token: str = field(default="", repr=False)
+    discogs_token_file: str = ""
+    discogs_rate: float = 0.0  # requests/second; 0 = 24/min without a token, 58/min with one
+    # Uncached Discogs lookups one API call may wait for; the rest are fetched
+    # in the background and used once cached.
+    discogs_request_budget: int = 2
+    # Distinct studio albums sampled for an artist's Discogs-derived tags.
+    discogs_artist_albums: int = 10
     cache_ttl: int = 7 * 24 * 3600
     negative_cache_ttl: int = 24 * 3600
     popularity_cache_ttl: int = 24 * 3600
@@ -113,6 +125,16 @@ class UpstreamConfig:
     enrich_scrobbles: bool = True
     # ListenBrainz sitewide stats range used for chart.* and geo.*.
     chart_range: str = "week"
+
+    def resolved_discogs_token(self) -> str:
+        if self.discogs_token:
+            return self.discogs_token.strip()
+        if self.discogs_token_file:
+            try:
+                return Path(self.discogs_token_file).read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                raise ConfigError(f"cannot read upstream.discogs_token_file: {exc.strerror}") from None
+        return ""
 
 
 @dataclass
@@ -181,6 +203,8 @@ class Config:
             raise ConfigError("api.signature_policy must be verify-known, strict or off")
         if self.api.accept_unknown_sessions and not self.api.default_user:
             raise ConfigError("api.accept_unknown_sessions requires api.default_user")
+        if self.upstream.discogs_request_budget < 0 or self.upstream.discogs_artist_albums < 0:
+            raise ConfigError("upstream.discogs_request_budget and discogs_artist_albums must be >= 0")
         if (self.listenbrainz.scrobble or self.listenbrainz.feedback) and not (
             self.listenbrainz.token or self.listenbrainz.token_file
         ):

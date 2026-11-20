@@ -79,19 +79,40 @@ class TheAudioDB:
         self.key = key
         self.enabled = enabled
 
-    def artist_images(self, mbid: str, **kw) -> dict[str, str]:
+    WEB = "https://www.theaudiodb.com"
+
+    def _lookup(self, endpoint: str, list_key: str, mbid: str, **kw) -> dict[str, Any]:
         if not self.enabled or not mbid:
             return {}
         try:
-            data = self.http.get_json("theaudiodb", f"{self.base}/{self.key}/artist-mb.php", {"i": mbid},
+            data = self.http.get_json("theaudiodb", f"{self.base}/{self.key}/{endpoint}", {"i": mbid},
                                       optional=True, **kw)
         except UpstreamError as exc:
             log.info("theaudiodb lookup failed: %s", exc)
             return {}
-        artists = (data or {}).get("artists") or []
-        if not artists:
+        items = (data or {}).get(list_key) if isinstance(data, dict) else None
+        return items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else {}
+
+    def artist(self, mbid: str, **kw) -> dict[str, Any]:
+        """Raw TheAudioDB artist for an MB artist MBID (the request artist_images makes)."""
+        return self._lookup("artist-mb.php", "artists", mbid, **kw)
+
+    def album(self, rg_mbid: str, **kw) -> dict[str, Any]:
+        """Raw TheAudioDB album for an MB release-group MBID."""
+        return self._lookup("album-mb.php", "album", rg_mbid, **kw)
+
+    def genre(self, kind: str, item: dict[str, Any]) -> tuple[str, str] | None:
+        """(strGenre, public page URL) of an artist/album lookup, or None."""
+        name = (item.get("strGenre") or "").strip() if isinstance(item.get("strGenre"), str) else ""
+        ident = str(item.get("idArtist" if kind == "artist" else "idAlbum") or "")
+        if not name:
+            return None
+        return name, f"{self.WEB}/{kind}/{ident}" if ident.isdigit() else self.WEB
+
+    def artist_images(self, mbid: str, **kw) -> dict[str, str]:
+        a = self.artist(mbid, **kw)
+        if not a:
             return {}
-        a = artists[0]
         out = {}
         for field in ("strArtistThumb", "strArtistFanart", "strArtistWideThumb", "strArtistBanner",
                       "strArtistLogo", "strArtistCutout"):

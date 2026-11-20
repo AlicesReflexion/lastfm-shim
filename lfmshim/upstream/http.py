@@ -63,8 +63,11 @@ class RateLimiter:
 class HttpClient:
     # Requests/second per service host. MusicBrainz: 1/s average per IP.
     # TheAudioDB free key: 30/min. ListenBrainz: be polite (~1/s; headers tell us more).
+    # Discogs: 25/min without a token, 60/min with one (X-Discogs-Ratelimit); a
+    # small margin is kept because Discogs counts over a moving 60 s window.
     DEFAULT_RATES = {"musicbrainz": 1.0, "theaudiodb": 0.5, "listenbrainz": 2.0, "labs": 1.0,
-                     "coverart": 5.0, "wikipedia": 5.0, "wikidata": 5.0}
+                     "coverart": 5.0, "wikipedia": 5.0, "wikidata": 5.0, "discogs": 24 / 60}
+    DISCOGS_TOKEN_RATE = 58 / 60
 
     def __init__(self, app: Any):
         self.app = app
@@ -75,6 +78,10 @@ class HttpClient:
         self.user_agent = f"lfmshim/{__version__} ( {contact} )"
         rates = dict(self.DEFAULT_RATES)
         rates["musicbrainz"] = cfg.musicbrainz_rate
+        if cfg.discogs_rate > 0:
+            rates["discogs"] = cfg.discogs_rate
+        elif cfg.resolved_discogs_token():
+            rates["discogs"] = self.DISCOGS_TOKEN_RATE
         self.limiters = {k: RateLimiter(v, app.clock, app.sleep) for k, v in rates.items()}
         self._inflight: dict[str, threading.Lock] = {}
         self._inflight_lock = threading.Lock()
@@ -87,6 +94,17 @@ class HttpClient:
         with self._inflight_lock:
             return self._inflight.setdefault(key, threading.Lock())
 
+    @staticmethod
+    def _full_url(url: str, params: dict[str, Any] | None) -> str:
+        if params:
+            url = url + ("&" if "?" in url else "?") + urlencode({k: v for k, v in params.items() if v is not None})
+        return url
+
+    def is_cached(self, url: str, params: dict[str, Any] | None = None, method: str = "GET") -> bool:
+        """True when a GET would be answered from the cache (including cached
+        404s and failures), i.e. without any network request."""
+        return self.app.store.cache_get(self._key(method, self._full_url(url, params), None)) is not None
+
     def get_json(self, service: str, url: str, params: dict[str, Any] | None = None, *, ttl: int | None = None,
                  method: str = "GET", json_body: Any = None, headers: dict[str, str] | None = None,
                  cache: bool = True, cache_only: bool = False, retries: int = 2,
@@ -97,8 +115,7 @@ class HttpClient:
         a short timeout, and a failure is cached briefly and reported as None so
         one slow service cannot stall every request.
         """
-        if params:
-            url = url + ("&" if "?" in url else "?") + urlencode({k: v for k, v in params.items() if v is not None})
+        url = self._full_url(url, params)
         body = json.dumps(json_body, separators=(",", ":")).encode() if json_body is not None else None
         ttl = self.cfg.cache_ttl if ttl is None else ttl
         key = self._key(method, url, body)
@@ -146,6 +163,10 @@ class HttpClient:
             if limiter:
                 limiter.wait()
             status, rheaders, data = self.transport.request(method, url, headers, body, timeout)
+            if status in (429, 503) and attempt >= retries and limiter:
+                # Out of retries (always, for optional data): still slow down,
+                # so the next request to this service does not hit the limit too.
+                limiter.penalize(_retry_after(rheaders, default=2.0 * (attempt + 1)))
             if status in (429, 503) and attempt < retries:
                 attempt += 1
                 retry_after = _retry_after(rheaders, default=2.0 * attempt)

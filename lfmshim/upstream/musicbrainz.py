@@ -67,11 +67,17 @@ class MusicBrainz:
 
     def release(self, mbid: str, **kw) -> dict[str, Any] | None:
         return self._get(f"release/{mbid}",
-                         {"inc": "recordings+artist-credits+release-groups+tags+genres+media"}, **kw)
+                         {"inc": "recordings+artist-credits+release-groups+tags+genres+media+url-rels"}, **kw)
 
     def recording(self, mbid: str, **kw) -> dict[str, Any] | None:
         return self._get(f"recording/{mbid}",
                          {"inc": "artist-credits+releases+release-groups+tags+genres+url-rels"}, **kw)
+
+    def artist_albums(self, artist_mbid: str, **kw) -> list[dict[str, Any]]:
+        """Up to 100 album release groups of an artist, each with url-rels, tags and genres."""
+        data = self._get("release-group", {"artist": artist_mbid, "type": "album", "inc": "url-rels+tags+genres",
+                                           "limit": 100}, **kw) or {}
+        return data.get("release-groups") or []
 
     def releases_of_group(self, rg_mbid: str, **kw) -> list[dict[str, Any]]:
         data = self._get("release", {"release-group": rg_mbid, "status": "official", "inc": "media",
