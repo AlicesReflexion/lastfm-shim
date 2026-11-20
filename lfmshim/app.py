@@ -25,6 +25,7 @@ class App:
     def _init_services(self) -> None:
         from . import api  # noqa: F401  (registers methods)
         from .metadata import Resolver
+        from .tags import TagSources
         from .upstream.discogs import Discogs
         from .upstream.http import HttpClient
         from .upstream.listenbrainz import ListenBrainz
@@ -39,6 +40,7 @@ class App:
         self.tadb = TheAudioDB(self.http, up.theaudiodb_url, up.theaudiodb_key, up.theaudiodb_enabled)
         self.caa = CoverArtArchive(self.http, up.coverart_url)
         self.discogs = Discogs(self.http, up.discogs_url, up.resolved_discogs_token(), up.discogs_enabled)
+        self.tag_sources = TagSources(self)
         self.resolver = Resolver(self)
         from .sync import Sync
         from .webauth import WebAuth

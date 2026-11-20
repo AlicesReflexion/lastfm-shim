@@ -10,6 +10,7 @@ from ..render import JsonInt, json_int_or_null
 from .common import (artist_images, cover_images, images, lfm_url, opensearch, paging_attr, tag_url, toptags,
                      user_url, wiki)
 from .registry import Request, method
+from ..tags import TagResult, sources_view
 
 STREAMABLE = {"#text": "0", "fulltrack": "0"}
 
@@ -117,6 +118,16 @@ def resolve_track(req: Request) -> dict[str, Any]:
     return data
 
 
+def tag_block(req: Request, result: TagResult, limit: int, with_count: bool = False) -> dict[str, Any]:
+    """A ``tags``/``toptags`` body. ``tagsources=1`` (a shim extension, off by
+    default so strict clients see the standard shape) adds ``source`` elements
+    naming where the tags came from; each tag's ``url`` stays a tag page."""
+    block: dict[str, Any] = {"tag": toptags(result.tags, limit, with_count=with_count)}
+    if req.bool("tagsources"):
+        block["source"] = sources_view(result)
+    return block
+
+
 def _similar_artists(req: Request, mbid: str, limit: int, cache_only_images: bool = True) -> list[dict[str, Any]]:
     lb = req.app.lb
     if not mbid or lb is None or req.app.config.upstream.offline:
@@ -154,7 +165,7 @@ def artist_get_info(req: Request):
         "streamable": "0", "ontour": "0", "stats": stats,
         "similar": {"artist": [{k: v for k, v in s.items() if k in ("name", "url", "image")}
                                for s in _similar_artists(req, mbid, 5)]},
-        "tags": {"tag": toptags(merged_tags(a), 5)},
+        "tags": tag_block(req, req.app.tag_sources.artist(a), 5),
     }
     bio = wiki(req.app.wiki.summary(a), lfm_url(name), req.app.now())
     out["bio"] = bio or {"links": {"link": {"#text": "", "rel": "original", "href": lfm_url(name) + "/+wiki"}},
@@ -232,10 +243,12 @@ def artist_get_top_albums(req: Request):
     return {"topalbums": {"album": albums, "@attr": paging_attr(page, limit, total, artist=a["name"])}}
 
 
-@method("artist.getTopTags", notes="MusicBrainz tags+genres; count scaled so the top tag is 100")
+@method("artist.getTopTags", notes="Discogs styles/genres counted per album, else TheAudioDB genre, else "
+                                   "MusicBrainz tags+genres")
 def artist_get_top_tags(req: Request):
     a = resolve_artist(req)
-    return {"toptags": {"tag": toptags(merged_tags(a), 100, with_count=True), "@attr": {"artist": a["name"]}}}
+    block = tag_block(req, req.app.tag_sources.artist(a), 100, with_count=True)
+    return {"toptags": {**block, "@attr": {"artist": a["name"]}}}
 
 
 @method("artist.search", support="approximate",
@@ -287,8 +300,7 @@ def album_get_info(req: Request):
                            "@attr": {"rank": JsonInt(rank)},
                            "artist": artist_ref(pa["name"] or artist, pa["mbid"])})
     out: dict[str, Any] = {
-        "artist": artist, "mbid": release_mbid or rg_mbid, "tags": {"tag": toptags(merged_tags(data["release_group"]
-                                                                                               or rel), 5)},
+        "artist": artist, "mbid": release_mbid or rg_mbid, "tags": tag_block(req, req.app.tag_sources.album(data), 5),
         "name": title, "image": album_cover(req, rg_mbid, release_mbid),
         "tracks": {"track": tracks}, "listeners": pop["listeners"], "playcount": pop["playcount"],
         "url": lfm_url(artist, title),
@@ -302,12 +314,13 @@ def album_get_info(req: Request):
     return {"album": out}
 
 
-@method("album.getTopTags", notes="MusicBrainz release-group tags+genres")
+@method("album.getTopTags", notes="Discogs master/release styles then genres, else TheAudioDB genre, else "
+                                  "MusicBrainz release-group tags+genres")
 def album_get_top_tags(req: Request):
     data = resolve_album(req)
     title, artist, _, _ = _album_names(data)
-    tags = merged_tags(data["release_group"] or data["release"])
-    return {"toptags": {"tag": toptags(tags, 100, with_count=True), "@attr": {"artist": artist, "album": title}}}
+    block = tag_block(req, req.app.tag_sources.album(data), 100, with_count=True)
+    return {"toptags": {**block, "@attr": {"artist": artist, "album": title}}}
 
 
 @method("album.search", support="approximate", notes="MusicBrainz release-group relevance ranking")

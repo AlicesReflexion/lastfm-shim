@@ -22,7 +22,7 @@ log = logging.getLogger("lfmshim.api")
 LOG_SAFE_PARAMS = frozenset({
     "method", "format", "artist", "album", "track", "albumartist", "mbid", "limit", "page", "user",
     "username", "period", "extended", "autocorrect", "lang", "country", "tag", "taggingtype", "from", "to",
-    "timestamp", "duration", "tracknumber", "chosenbyuser",
+    "timestamp", "duration", "tracknumber", "chosenbyuser", "tagsources",
 })
 LOG_VALUE_MAX = 120
 

@@ -65,6 +65,8 @@ def install_cher(t):
         return 200, {"count": 0, "artists": []}
 
     t.add(f"{MB}/artist", artist_search)
+    # Album browse for artist tags (no Discogs links: tags fall back as before).
+    t.add_json(f"{MB}/release-group?type=album", {"release-group-count": 0, "release-groups": []})
     t.add_json(f"{MB}/artist/{CHER}", cher_artist())
     t.add_json(f"{MB}/artist/{NIRVANA_US}", nirvana(NIRVANA_US, "90s US grunge band"))
     t.add_json(f"{MB}/artist/{NIRVANA_UK}", nirvana(NIRVANA_UK, "60s band from the UK"))
@@ -124,6 +126,7 @@ def install_believe(t):
         ]}],
     }
     t.add_json(f"{MB}/release/{BELIEVE_REL}", release)
+    t.add_json(f"{TADB}/album-mb.php", {"album": None})
     t.add_json(f"{CAA}/release-group/{BELIEVE_RG}", {"images": [
         {"front": False, "image": "http://coverartarchive.org/release/x/back.jpg", "thumbnails": {}},
         {"front": True, "image": "http://coverartarchive.org/release/x/1.jpg",

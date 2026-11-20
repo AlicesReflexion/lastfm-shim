@@ -1,4 +1,5 @@
-"""Background delivery of opt-in ListenBrainz writes and cache warm-up.
+"""Background delivery of opt-in ListenBrainz writes and cache warm-up
+(scrobble MBIDs and covers, and Discogs tag lookups deferred by API calls).
 
 Everything a client submits is committed locally together with its outbox
 items, in one SQLite transaction: a crash or restart can never keep a scrobble
@@ -77,6 +78,9 @@ class Sync:
         return kind in FORWARD_KINDS and bool(user) and self._forwards(user, flag)
 
     # ---- producers -----------------------------------------------------------
+    def wake(self) -> None:
+        self._wake.set()
+
     def scrobbled(self, user: str, records: list[dict[str, Any]]) -> None:
         if self._forwards(user, self.cfg.scrobble):
             listens = [listen_payload(r, client="lfmshim", client_version=__version__) for r in records
@@ -164,7 +168,11 @@ class Sync:
             raise ValueError(kind)
 
     def _enrich(self, p: dict[str, Any]) -> None:
-        """Resolve MBIDs/cover for a scrobble so later list views have them."""
+        """Resolve MBIDs/cover for a scrobble so later list views have them, or
+        fetch the Discogs lookups a tag request deferred (``task: tags``)."""
+        if p.get("task") == "tags":
+            self.app.tag_sources.warm(p["kind"], p["mbid"])
+            return
         r = self.app.resolver
         rec = r.track(artist=p["artist"], track=p["track"], mbid=p.get("mbid") or None)
         track_mbid = artist_mbid = album_mbid = ""
