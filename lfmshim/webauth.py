@@ -30,7 +30,8 @@ HEADERS = {
     "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
                                "frame-ancestors 'none'; base-uri 'none'",
     "X-Frame-Options": "DENY",
-    "Referrer-Policy": "no-referrer",
+    # Preserve Origin on the form's same-origin POST, including on LAN HTTP.
+    "Referrer-Policy": "same-origin",
 }
 
 PAGE = """<!doctype html>
@@ -57,7 +58,7 @@ def _page(status: int, body: str) -> Response:
 
 
 def _safe_cb(cb: str | None) -> str | None:
-    if not cb:
+    if not cb or any(ord(c) < 32 or ord(c) == 127 for c in cb):
         return None
     parts = urlsplit(cb)
     if parts.scheme not in ("http", "https") or not parts.netloc:
@@ -108,23 +109,26 @@ class WebAuth:
                 '<label for="u">Local username</label><input id="u" type="text" name="username" required '
                 'autocomplete="username"><label for="p">Password</label><input id="p" type="password" '
                 'name="password" required autocomplete="current-password"><div class="row">'
-                '<button type="submit" name="action" value="deny">Deny</button>'
                 '<button class="primary" type="submit" name="action" value="approve">Allow access</button>'
+                '<button type="submit" name="action" value="deny" formnovalidate>Deny</button>'
                 "</div></form>")
         return _page(status, body)
 
-    def _same_origin(self, headers: dict[str, str]) -> bool:
+    def _origin_allowed(self, headers: dict[str, str]) -> bool:
         origin = headers.get("origin")
         if not origin:
             return headers.get("sec-fetch-site") in (None, "same-origin", "none")
-        allowed = {self.app.config.server.effective_public_url()}
+        if origin == "null":
+            return False
+        allowed = {o.rstrip("/") for o in self.app.config.api.allowed_origins}
+        allowed.add(self.app.config.server.effective_public_url())
         host = headers.get("host")
         if host:
             allowed.update({f"http://{host}", f"https://{host}"})
         return origin.rstrip("/") in allowed
 
     def _post(self, params: dict[str, str], headers: dict[str, str]) -> Response:
-        if not self._same_origin(headers):
+        if not self._origin_allowed(headers):
             return _page(403, "<h1>Request blocked</h1><p>Cross-site form submission refused.</p>")
         token = params.get("token", "")
         row = self._token_row(token)
@@ -144,6 +148,15 @@ class WebAuth:
         log.info("token authorized for user %s", user)
         cb = _safe_cb(params.get("cb"))
         if cb:
-            return Response(302, "text/plain; charset=utf-8", b"", {**HEADERS, "Location": _with_token(cb, token)})
+            location = _with_token(cb, token)
+            if "text/html" in headers.get("accept", ""):
+                # Finish the same-origin form POST before navigating to another
+                # origin. Browsers may apply form-action to HTTP redirects too.
+                target = html.escape(location, quote=True)
+                page = _page(200, f'<h1>Application authorized</h1><p>'
+                             f'<a href="{target}">Return to your application</a></p>')
+                page.headers["Refresh"] = "0; url=" + location
+                return page
+            return Response(302, "text/plain; charset=utf-8", b"", {**HEADERS, "Location": location})
         return _page(200, f"<h1>Application authorized</h1><p>Signed in as <b>{html.escape(user)}</b>. "
                           "You can close this window and return to your application.</p>")

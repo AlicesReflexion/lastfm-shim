@@ -459,6 +459,7 @@ class AuthTests(unittest.TestCase):
         page = self.app.web_auth.handle("GET", {"api_key": API_KEY, "token": token}, self.host)
         self.assertEqual(page.status, 200)
         self.assertIn(b'name="csrf"', page.body)
+        self.assertEqual(page.headers["Referrer-Policy"], "same-origin")
         self.assertIn("frame-ancestors 'none'", page.headers["Content-Security-Policy"])
         self.assertEqual(self._approve(token).status, 200)
         _, body = call(self.app, "auth.getSession", sign=True, token=token)
@@ -476,6 +477,35 @@ class AuthTests(unittest.TestCase):
         resp = self.app.web_auth.handle("POST", params, {"Origin": "http://localhost:9549", **self.host})
         self.assertEqual(resp.status, 302)
         self.assertEqual(resp.headers["Location"], f"http://app.example/cb?x=1&token={token}")
+
+    def test_web_auth_configured_origin(self):
+        origin = "https://gonic.byalice.dev"
+        self.app.config.api.allowed_origins = [origin + "/"]
+        _, body = call(self.app, "auth.getToken")
+        token = body["token"]
+        headers = {**self.host, "Sec-Fetch-Site": "cross-site"}
+        self.assertEqual(self._approve(token, headers=headers).status, 403)
+        self.assertEqual(self._approve(token, headers={**headers, "Origin": origin + ".example"}).status, 403)
+        headers["Origin"] = origin
+        self.assertEqual(self._approve(token, headers=headers, csrf="forged").status, 403)
+        self.assertEqual(self._approve(token, headers=headers).status, 200)
+        _, body = call(self.app, "auth.getSession", sign=True, token=token)
+        self.assertEqual(body["session"]["name"], "alice")
+
+    def test_browser_default_submit_returns_to_gonic(self):
+        cb = "https://gonic.byalice.dev/admin/link_lastfm_do"
+        page = self.app.web_auth.handle("GET", {"api_key": API_KEY, "cb": cb}, self.host)
+        form = page.body.decode()
+        self.assertLess(form.index('value="approve"'), form.index('value="deny"'))
+        token = form.split('name="token" value="')[1].split('"')[0]
+        params = {"token": token, "csrf": self.app.store.get_token(token)["csrf"], "cb": cb,
+                  "username": "alice", "password": "correct horse", "action": "approve"}
+        response = self.app.web_auth.handle("POST", params, {**self.host, "Accept": "text/html"})
+        location = f"{cb}?token={token}"
+        self.assertEqual(response.headers["Refresh"], "0; url=" + location)
+        self.assertIn(f'href="{location}"'.encode(), response.body)
+        _, body = call(self.app, "auth.getSession", sign=True, token=token)
+        self.assertEqual(body["session"]["name"], "alice")
 
     def test_web_auth_rejections(self):
         _, body = call(self.app, "auth.getToken")

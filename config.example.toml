@@ -25,7 +25,7 @@ accept_unknown_sessions = false          # adopt real Last.fm session keys (sing
 json_collapse_single = false              # true = one-item lists as objects (live Last.fm sends arrays)
 scrobble_max_age = 1209600               # 14 days; 0 disables
 require_post_for_writes = true
-# allowed_origins = ["https://player.example"]   # browser apps allowed to call write methods
+# allowed_origins = ["https://gonic.byalice.dev"]   # browser origins trusted for login forms and API auth/write calls
 
 [upstream]
 contact = ""                             # REQUIRED etiquette: email/URL sent in the User-Agent to MusicBrainz & co.
